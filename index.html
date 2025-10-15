@@ -1155,6 +1155,9 @@
                     return p;
                 }
 
+                // Make toWorld accessible globally for measure tool
+                state.toWorld = toWorld;
+
                 function makeHighlightLine(ax, ay, bx, by, color = 0xffff00) {
                     clearHighlight();
                     const pos = new Float32Array([ax, ay, 0, bx, by, 0]);
@@ -1311,6 +1314,9 @@
                 }
 
                 function onPointerUp(e) {
+                    // Skip if measure mode is active
+                    if (state.measureMode) return;
+
                     if (!pointerDownInfo) return;
                     // ensure same pointer
                     if (
@@ -1559,8 +1565,8 @@
                 state.renderer.domElement.addEventListener(
                     "pointerup",
                     (e) => {
-                        if (!state.measureMode || !measurePointerDownInfo)
-                            return;
+                        if (!state.measureMode) return;
+                        if (!measurePointerDownInfo) return;
 
                         // Check if same pointer
                         if (
@@ -1582,7 +1588,7 @@
                         }
 
                         try {
-                            const world = toWorld(e);
+                            const world = state.toWorld(e);
 
                             if (!state.measurePoint1) {
                                 // First point
@@ -1712,7 +1718,7 @@
                         if (!state.measureMode || !state.measurePoint1) return;
 
                         try {
-                            const world = toWorld(e);
+                            const world = state.toWorld(e);
 
                             // Remove old preview line if exists
                             const oldPreview = state.overlayGroup.children.find(
