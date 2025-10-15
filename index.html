@@ -515,51 +515,81 @@
                 endDeg,
                 color = 0x00ffff,
             ) {
+                // Normalize angles to radians
                 const start = toRad(startDeg);
                 const end = toRad(endDeg);
                 let sweep = end - start;
-                if (sweep === 0) sweep = Math.PI * 2; // full circle if start=end
+                // If sweep is effectively zero, keep geometry minimal but still selectable as an arc
+                if (Math.abs(sweep) < 1e-12) {
+                    sweep = 0;
+                }
+                const absSweep = Math.abs(sweep);
                 const segs = Math.max(
                     32,
-                    Math.ceil(Math.abs(radius * sweep) / 2),
+                    Math.ceil((Math.max(radius, 1) * absSweep) / 2),
                 );
-                const pts = [];
-                for (let i = 0; i <= segs; i++) {
-                    const t = i / segs;
-                    const ang = start + t * sweep;
-                    pts.push({
-                        x: center.x + radius * Math.cos(ang),
-                        y: center.y + radius * Math.sin(ang),
-                    });
+                // Build geometry for rendering (as line segments), but keep userData as "arc" for picking/measurement
+                const pos = new Float32Array(segs * 6);
+                for (let i = 0; i < segs; i++) {
+                    const t1 = i / segs;
+                    const t2 = (i + 1) / segs;
+                    const ang1 = start + t1 * sweep;
+                    const ang2 = start + t2 * sweep;
+                    const x1 = center.x + radius * Math.cos(ang1);
+                    const y1 = center.y + radius * Math.sin(ang1);
+                    const x2 = center.x + radius * Math.cos(ang2);
+                    const y2 = center.y + radius * Math.sin(ang2);
+                    pos.set([x1, y1, 0, x2, y2, 0], i * 6);
                 }
-                addPolyline2D(pts, color);
+                const geom = new THREE.BufferGeometry();
+                geom.setAttribute(
+                    "position",
+                    new THREE.BufferAttribute(pos, 3),
+                );
+                const mat = new THREE.LineBasicMaterial({ color });
+                const obj = new THREE.LineSegments(geom, mat);
+                obj.userData = {
+                    type: "arc",
+                    center: { x: center.x, y: center.y },
+                    radius,
+                    startDeg,
+                    endDeg,
+                    startRad: start,
+                    endRad: end,
+                    sweep,
+                    color,
+                    length: Math.abs(radius * sweep),
+                };
+                state.group.add(obj);
             }
 
             function addCircle2D(center, radius, color = 0x00ffff) {
                 const segs = Math.max(64, Math.ceil(radius * 8));
-                const pts = [];
-                for (let i = 0; i <= segs; i++) {
-                    const t = (i / segs) * 2 * Math.PI;
-                    pts.push({
-                        x: center.x + radius * Math.cos(t),
-                        y: center.y + radius * Math.sin(t),
-                    });
+                const pos = new Float32Array(segs * 6);
+                for (let i = 0; i < segs; i++) {
+                    const t1 = (i / segs) * 2 * Math.PI;
+                    const t2 = ((i + 1) / segs) * 2 * Math.PI;
+                    const x1 = center.x + radius * Math.cos(t1);
+                    const y1 = center.y + radius * Math.sin(t1);
+                    const x2 = center.x + radius * Math.cos(t2);
+                    const y2 = center.y + radius * Math.sin(t2);
+                    pos.set([x1, y1, 0, x2, y2, 0], i * 6);
                 }
-                // create geometry to show circle
-                addPolyline2D(pts, color);
-                // Additionally add a lightweight "metadata marker" object so circles are easy to pick
-                const marker = new THREE.Object3D();
-                marker.position.set(center.x, center.y, 0);
-                marker.userData = {
+                const geom = new THREE.BufferGeometry();
+                geom.setAttribute(
+                    "position",
+                    new THREE.BufferAttribute(pos, 3),
+                );
+                const mat = new THREE.LineBasicMaterial({ color });
+                const obj = new THREE.LineSegments(geom, mat);
+                obj.userData = {
                     type: "circle",
                     center: { x: center.x, y: center.y },
                     radius,
                     color,
                     length: 2 * Math.PI * radius,
                 };
-                // invisible but present under group for picking logic
-                marker.visible = false;
-                state.group.add(marker);
+                state.group.add(obj);
             }
 
             function addPoint2D(pt, color = 0xffaa00, size = 1) {
@@ -1180,8 +1210,13 @@
                 function findNearestLocal(worldPt, maxDistance) {
                     let best = null;
                     let bestDist = Infinity;
+                    let bestPriority = Infinity;
+                    const tieEps = Math.max(1e-9, maxDistance * 0.25);
+                    const getPriority = (kind) =>
+                        kind === "circle" || kind === "arc" ? 0 : 1;
                     const px = worldPt.x,
                         py = worldPt.y;
+
                     const distPointToSegment = (px, py, ax, ay, bx, by) => {
                         const vx = bx - ax,
                             vy = by - ay;
@@ -1197,6 +1232,38 @@
                         return Math.hypot(px - projx, py - projy);
                     };
 
+                    const normalizeAngle = (a) => {
+                        let x = a % (Math.PI * 2);
+                        if (x < 0) x += Math.PI * 2;
+                        return x;
+                    };
+
+                    const distPointToArc = (
+                        px,
+                        py,
+                        cx,
+                        cy,
+                        r,
+                        startRad,
+                        sweep,
+                    ) => {
+                        // Degenerate: treat as circle if no sweep
+                        if (Math.abs(sweep) < 1e-12) {
+                            const dcenter = Math.hypot(px - cx, py - cy);
+                            return Math.abs(dcenter - r);
+                        }
+                        const ang = Math.atan2(py - cy, px - cx);
+                        const rel = normalizeAngle(ang - startRad);
+                        const span = Math.abs(sweep);
+                        const dir = sweep >= 0 ? 1 : -1;
+                        const clampedRel = Math.min(Math.max(rel, 0), span);
+                        const t =
+                            startRad + (dir >= 0 ? clampedRel : -clampedRel);
+                        const ax = cx + r * Math.cos(t);
+                        const ay = cy + r * Math.sin(t);
+                        return Math.hypot(px - ax, py - ay);
+                    };
+
                     let checkedCount = 0;
                     let skippedCount = 0;
 
@@ -1207,7 +1274,54 @@
                             continue;
                         }
                         checkedCount++;
-                        if (ud.type === "line") {
+
+                        if (ud.type === "circle") {
+                            const dcenter = Math.hypot(
+                                px - ud.center.x,
+                                py - ud.center.y,
+                            );
+                            const dr = Math.abs(dcenter - ud.radius);
+                            if (
+                                dr < bestDist - 1e-9 ||
+                                (Math.abs(dr - bestDist) <= tieEps &&
+                                    getPriority("circle") < bestPriority)
+                            ) {
+                                bestDist = dr;
+                                bestPriority = getPriority("circle");
+                                best = {
+                                    kind: "circle",
+                                    obj: child,
+                                    meta: ud,
+                                    dist: dr,
+                                };
+                            }
+                        } else if (ud.type === "arc") {
+                            const d = distPointToArc(
+                                px,
+                                py,
+                                ud.center.x,
+                                ud.center.y,
+                                ud.radius,
+                                ud.startRad ?? toRad(ud.startDeg ?? 0),
+                                ud.sweep ??
+                                    toRad(ud.endDeg ?? 0) -
+                                        toRad(ud.startDeg ?? 0),
+                            );
+                            if (
+                                d < bestDist - 1e-9 ||
+                                (Math.abs(d - bestDist) <= tieEps &&
+                                    getPriority("arc") < bestPriority)
+                            ) {
+                                bestDist = d;
+                                bestPriority = getPriority("arc");
+                                best = {
+                                    kind: "arc",
+                                    obj: child,
+                                    meta: ud,
+                                    dist: d,
+                                };
+                            }
+                        } else if (ud.type === "line") {
                             const d = distPointToSegment(
                                 px,
                                 py,
@@ -1216,8 +1330,13 @@
                                 ud.b.x,
                                 ud.b.y,
                             );
-                            if (d < bestDist) {
+                            if (
+                                d < bestDist - 1e-9 ||
+                                (Math.abs(d - bestDist) <= tieEps &&
+                                    getPriority("line") < bestPriority)
+                            ) {
                                 bestDist = d;
+                                bestPriority = getPriority("line");
                                 best = {
                                     kind: "line",
                                     obj: child,
@@ -1242,8 +1361,13 @@
                                     b.x,
                                     b.y,
                                 );
-                                if (d < bestDist) {
+                                if (
+                                    d < bestDist - 1e-9 ||
+                                    (Math.abs(d - bestDist) <= tieEps &&
+                                        getPriority("polyline") < bestPriority)
+                                ) {
                                     bestDist = d;
+                                    bestPriority = getPriority("polyline");
                                     best = {
                                         kind: "polyline",
                                         obj: child,
@@ -1254,21 +1378,6 @@
                                     };
                                 }
                             }
-                        } else if (ud.type === "circle") {
-                            const dcenter = Math.hypot(
-                                px - ud.center.x,
-                                py - ud.center.y,
-                            );
-                            const dr = Math.abs(dcenter - ud.radius);
-                            if (dr < bestDist) {
-                                bestDist = dr;
-                                best = {
-                                    kind: "circle",
-                                    obj: child,
-                                    meta: ud,
-                                    dist: dr,
-                                };
-                            }
                         }
                     }
 
@@ -1276,7 +1385,7 @@
                     return null;
                 }
 
-                function makeHighlightLine(ax, ay, bx, by, color = 0xff0000) {
+                function makeHighlightLine(ax, ay, bx, by, color = 0xff00ff) {
                     console.log("[HIGHLIGHT] Line:", { ax, ay, bx, by });
                     clearHighlight();
                     const pos = new Float32Array([ax, ay, 0, bx, by, 0]);
@@ -1285,18 +1394,26 @@
                         "position",
                         new THREE.BufferAttribute(pos, 3),
                     );
+                    // Use a distinctive highlight appearance and render on top
                     const mat = new THREE.LineBasicMaterial({
                         color,
                         toneMapped: false,
+                        depthTest: false,
+                        transparent: true,
+                        opacity: 0.95,
+                        linewidth: 4,
                     });
                     highlight = new THREE.LineSegments(geom, mat);
+                    highlight.renderOrder = 9999;
                     // ensure highlight renders above small z-fighting by nudging slightly in z
                     highlight.position.z = 0.001;
                     if (state.overlayGroup) state.overlayGroup.add(highlight);
                     else state.group.add(highlight);
+                    if (highlight.material)
+                        highlight.material.depthWrite = false;
                 }
 
-                function makeHighlightPolyline(pts, color = 0xff0000) {
+                function makeHighlightPolyline(pts, color = 0xff00ff) {
                     clearHighlight();
                     if (!pts || pts.length < 2) return;
                     const segs = pts.length - 1;
@@ -1314,14 +1431,21 @@
                     const mat = new THREE.LineBasicMaterial({
                         color,
                         toneMapped: false,
+                        depthTest: false,
+                        transparent: true,
+                        opacity: 0.95,
+                        linewidth: 4,
                     });
                     highlight = new THREE.LineSegments(geom, mat);
+                    highlight.renderOrder = 9999;
                     highlight.position.z = 0.001;
                     if (state.overlayGroup) state.overlayGroup.add(highlight);
                     else state.group.add(highlight);
+                    if (highlight.material)
+                        highlight.material.depthWrite = false;
                 }
 
-                function makeHighlightCircle(center, radius, color = 0xff0000) {
+                function makeHighlightCircle(center, radius, color = 0xff00ff) {
                     clearHighlight();
                     const segs = 96;
                     const pos = new Float32Array(segs * 6);
@@ -1342,11 +1466,65 @@
                     const mat = new THREE.LineBasicMaterial({
                         color,
                         toneMapped: false,
+                        depthTest: false,
+                        transparent: true,
+                        opacity: 0.95,
+                        linewidth: 4,
                     });
                     highlight = new THREE.LineSegments(geom, mat);
+                    highlight.renderOrder = 9999;
                     highlight.position.z = 0.001;
                     if (state.overlayGroup) state.overlayGroup.add(highlight);
                     else state.group.add(highlight);
+                    if (highlight.material)
+                        highlight.material.depthWrite = false;
+                }
+
+                function makeHighlightArc(
+                    center,
+                    radius,
+                    startRad,
+                    sweep,
+                    color = 0xff00ff,
+                ) {
+                    clearHighlight();
+                    const absSweep = Math.abs(sweep);
+                    const segs = Math.max(
+                        32,
+                        Math.ceil((Math.max(radius, 1) * absSweep) / 2),
+                    );
+                    const pos = new Float32Array(segs * 6);
+                    for (let i = 0; i < segs; i++) {
+                        const t1 = i / segs;
+                        const t2 = (i + 1) / segs;
+                        const a1 = startRad + t1 * sweep;
+                        const a2 = startRad + t2 * sweep;
+                        const x1 = center.x + radius * Math.cos(a1);
+                        const y1 = center.y + radius * Math.sin(a1);
+                        const x2 = center.x + radius * Math.cos(a2);
+                        const y2 = center.y + radius * Math.sin(a2);
+                        pos.set([x1, y1, 0, x2, y2, 0], i * 6);
+                    }
+                    const geom = new THREE.BufferGeometry();
+                    geom.setAttribute(
+                        "position",
+                        new THREE.BufferAttribute(pos, 3),
+                    );
+                    const mat = new THREE.LineBasicMaterial({
+                        color,
+                        toneMapped: false,
+                        depthTest: false,
+                        transparent: true,
+                        opacity: 0.95,
+                        linewidth: 4,
+                    });
+                    highlight = new THREE.LineSegments(geom, mat);
+                    highlight.renderOrder = 9999;
+                    highlight.position.z = 0.001;
+                    if (state.overlayGroup) state.overlayGroup.add(highlight);
+                    else state.group.add(highlight);
+                    if (highlight.material)
+                        highlight.material.depthWrite = false;
                 }
 
                 // Toggle selection: if clicking same entity, clear; otherwise select new
@@ -1409,6 +1587,38 @@
                             clientX,
                             clientY,
                         );
+                    } else if (kind === "arc") {
+                        const m = nearest.meta;
+                        makeHighlightArc(
+                            m.center,
+                            m.radius,
+                            m.startRad ?? toRad(m.startDeg ?? 0),
+                            m.sweep ??
+                                toRad(m.endDeg ?? 0) - toRad(m.startDeg ?? 0),
+                            0xff0000,
+                        );
+                        const angleDeg =
+                            (Math.abs(
+                                m.sweep ??
+                                    toRad(m.endDeg ?? 0) -
+                                        toRad(m.startDeg ?? 0),
+                            ) *
+                                180) /
+                            Math.PI;
+                        showMeasurementAtClient(
+                            "Length: " +
+                                (
+                                    m.length ??
+                                    Math.abs(m.radius * (m.sweep ?? 0))
+                                ).toFixed(4) +
+                                " • Radius R: " +
+                                m.radius.toFixed(4) +
+                                " • Angle: " +
+                                angleDeg.toFixed(2) +
+                                "°",
+                            clientX,
+                            clientY,
+                        );
                     } else if (kind === "circle") {
                         const r = nearest.meta.radius;
                         makeHighlightCircle(nearest.meta.center, r, 0xff0000);
@@ -1460,10 +1670,11 @@
                         const world = toWorld(e);
                         console.log("[PICK] Click at world:", world);
                         // threshold in world units (scale with view)
+                        // Reduced from ~10px to ~6px to avoid overly-far picks
                         const h = state.renderer.domElement.height || 1;
                         const worldPerPixel =
                             (state.camera.top - state.camera.bottom) / h;
-                        const threshold = Math.max(1e-6, 10 * worldPerPixel); // ~10px
+                        const threshold = Math.max(1e-6, 6 * worldPerPixel); // ~6px (was 10px)
                         console.log(
                             "[PICK] Threshold:",
                             threshold,
