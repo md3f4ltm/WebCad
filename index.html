@@ -62,15 +62,7 @@
                 border-color: #0a84ff;
                 color: #fff;
             }
-            #topbar .hint {
-                margin-left: auto;
-                opacity: 0.8;
-                font-size: 12px;
-            }
             @media (max-width: 600px) {
-                #topbar .hint {
-                    display: none;
-                }
             }
             #viewer {
                 position: fixed;
@@ -168,9 +160,6 @@
                 </svg>
                 Medir
             </button>
-            <div class="hint">
-                Arrastar p/ pan • Roda p/ zoom • Solte DXF aqui
-            </div>
         </div>
         <div id="viewer"></div>
         <div id="status"></div>
@@ -277,12 +266,7 @@
                     TWO: THREE.TOUCH.DOLLY_PAN,
                 };
 
-                // Helpers (not part of bounds)
-                const grid = new THREE.GridHelper(100, 20, 0x333333, 0x222222);
-                grid.rotation.x = Math.PI / 2; // XY plane
-                state.scene.add(grid);
-                const axes = new THREE.AxesHelper(10);
-                state.scene.add(axes);
+                // Background helpers removed for cleaner view
 
                 state.group = new THREE.Group();
                 state.scene.add(state.group);
@@ -1192,7 +1176,107 @@
                 // Make toWorld accessible globally for measure tool
                 state.toWorld = toWorld;
 
-                function makeHighlightLine(ax, ay, bx, by, color = 0xffff00) {
+                // Shared nearest-finder function for both clicking and hovering
+                function findNearestLocal(worldPt, maxDistance) {
+                    let best = null;
+                    let bestDist = Infinity;
+                    const px = worldPt.x,
+                        py = worldPt.y;
+                    const distPointToSegment = (px, py, ax, ay, bx, by) => {
+                        const vx = bx - ax,
+                            vy = by - ay;
+                        const wx = px - ax,
+                            wy = py - ay;
+                        const c1 = vx * wx + vy * wy;
+                        if (c1 <= 0) return Math.hypot(px - ax, py - ay);
+                        const c2 = vx * vx + vy * vy;
+                        if (c2 <= c1) return Math.hypot(px - bx, py - by);
+                        const t = c1 / c2;
+                        const projx = ax + t * vx,
+                            projy = ay + t * vy;
+                        return Math.hypot(px - projx, py - projy);
+                    };
+
+                    let checkedCount = 0;
+                    let skippedCount = 0;
+
+                    for (const child of state.group.children) {
+                        const ud = child.userData || {};
+                        if (!ud.type) {
+                            skippedCount++;
+                            continue;
+                        }
+                        checkedCount++;
+                        if (ud.type === "line") {
+                            const d = distPointToSegment(
+                                px,
+                                py,
+                                ud.a.x,
+                                ud.a.y,
+                                ud.b.x,
+                                ud.b.y,
+                            );
+                            if (d < bestDist) {
+                                bestDist = d;
+                                best = {
+                                    kind: "line",
+                                    obj: child,
+                                    meta: ud,
+                                    segment: { a: ud.a, b: ud.b },
+                                    dist: d,
+                                };
+                            }
+                        } else if (ud.type === "polyline") {
+                            for (
+                                let i = 0;
+                                i < (ud.pts || []).length - 1;
+                                i++
+                            ) {
+                                const a = ud.pts[i],
+                                    b = ud.pts[i + 1];
+                                const d = distPointToSegment(
+                                    px,
+                                    py,
+                                    a.x,
+                                    a.y,
+                                    b.x,
+                                    b.y,
+                                );
+                                if (d < bestDist) {
+                                    bestDist = d;
+                                    best = {
+                                        kind: "polyline",
+                                        obj: child,
+                                        meta: ud,
+                                        segment: { a, b },
+                                        dist: d,
+                                        totalLength: ud.length,
+                                    };
+                                }
+                            }
+                        } else if (ud.type === "circle") {
+                            const dcenter = Math.hypot(
+                                px - ud.center.x,
+                                py - ud.center.y,
+                            );
+                            const dr = Math.abs(dcenter - ud.radius);
+                            if (dr < bestDist) {
+                                bestDist = dr;
+                                best = {
+                                    kind: "circle",
+                                    obj: child,
+                                    meta: ud,
+                                    dist: dr,
+                                };
+                            }
+                        }
+                    }
+
+                    if (bestDist <= maxDistance) return best;
+                    return null;
+                }
+
+                function makeHighlightLine(ax, ay, bx, by, color = 0xff0000) {
                     console.log("[HIGHLIGHT] Line:", { ax, ay, bx, by });
                     clearHighlight();
                     const pos = new Float32Array([ax, ay, 0, bx, by, 0]);
@@ -1212,7 +1296,7 @@
                     else state.group.add(highlight);
                 }
 
-                function makeHighlightPolyline(pts, color = 0xffff00) {
+                function makeHighlightPolyline(pts, color = 0xff0000) {
                     clearHighlight();
                     if (!pts || pts.length < 2) return;
                     const segs = pts.length - 1;
@@ -1237,7 +1321,7 @@
                     else state.group.add(highlight);
                 }
 
-                function makeHighlightCircle(center, radius, color = 0xffff00) {
+                function makeHighlightCircle(center, radius, color = 0xff0000) {
                     clearHighlight();
                     const segs = 96;
                     const pos = new Float32Array(segs * 6);
@@ -1299,7 +1383,7 @@
                             nearest.segment.a.y,
                             nearest.segment.b.x,
                             nearest.segment.b.y,
-                            0xffff00,
+                            0xff0000,
                         );
                         showMeasurementAtClient(
                             "Length: " + len.toFixed(4),
@@ -1312,7 +1396,7 @@
                             nearest.segment.a.y,
                             nearest.segment.b.x,
                             nearest.segment.b.y,
-                            0xffff00,
+                            0xff0000,
                         );
                         showMeasurementAtClient(
                             "Segment: " +
@@ -1327,12 +1411,12 @@
                         );
                     } else if (kind === "circle") {
                         const r = nearest.meta.radius;
-                        makeHighlightCircle(nearest.meta.center, r, 0xffff00);
+                        makeHighlightCircle(nearest.meta.center, r, 0xff0000);
                         showMeasurementAtClient(
-                            "R: " +
-                                r.toFixed(4) +
-                                " • Ø: " +
-                                (2 * r).toFixed(4),
+                            "Length: " +
+                                (2 * Math.PI * r).toFixed(4) +
+                                " • Radius R: " +
+                                r.toFixed(4),
                             clientX,
                             clientY,
                         );
@@ -1404,124 +1488,6 @@
 
                         // use existing nearest finder if present; fallback to scanning children
                         // Local nearest-finder (scans current geometry). Avoids relying on an external function.
-                        function findNearestLocal(worldPt, maxDistance) {
-                            let best = null;
-                            let bestDist = Infinity;
-                            const px = worldPt.x,
-                                py = worldPt.y;
-                            const distPointToSegment = (
-                                px,
-                                py,
-                                ax,
-                                ay,
-                                bx,
-                                by,
-                            ) => {
-                                const vx = bx - ax,
-                                    vy = by - ay;
-                                const wx = px - ax,
-                                    wy = py - ay;
-                                const c1 = vx * wx + vy * wy;
-                                if (c1 <= 0)
-                                    return Math.hypot(px - ax, py - ay);
-                                const c2 = vx * vx + vy * vy;
-                                if (c2 <= c1)
-                                    return Math.hypot(px - bx, py - by);
-                                const t = c1 / c2;
-                                const projx = ax + t * vx,
-                                    projy = ay + t * vy;
-                                return Math.hypot(px - projx, py - projy);
-                            };
-
-                            let checkedCount = 0;
-                            let skippedCount = 0;
-
-                            for (const child of state.group.children) {
-                                const ud = child.userData || {};
-                                if (!ud.type) {
-                                    skippedCount++;
-                                    continue;
-                                }
-                                checkedCount++;
-                                if (ud.type === "line") {
-                                    const d = distPointToSegment(
-                                        px,
-                                        py,
-                                        ud.a.x,
-                                        ud.a.y,
-                                        ud.b.x,
-                                        ud.b.y,
-                                    );
-                                    if (d < bestDist) {
-                                        bestDist = d;
-                                        best = {
-                                            kind: "line",
-                                            obj: child,
-                                            meta: ud,
-                                            segment: { a: ud.a, b: ud.b },
-                                            dist: d,
-                                        };
-                                    }
-                                } else if (ud.type === "polyline") {
-                                    for (
-                                        let i = 0;
-                                        i < (ud.pts || []).length - 1;
-                                        i++
-                                    ) {
-                                        const a = ud.pts[i],
-                                            b = ud.pts[i + 1];
-                                        const d = distPointToSegment(
-                                            px,
-                                            py,
-                                            a.x,
-                                            a.y,
-                                            b.x,
-                                            b.y,
-                                        );
-                                        if (d < bestDist) {
-                                            bestDist = d;
-                                            best = {
-                                                kind: "polyline",
-                                                obj: child,
-                                                meta: ud,
-                                                segment: { a, b },
-                                                dist: d,
-                                                totalLength: ud.length,
-                                            };
-                                        }
-                                    }
-                                } else if (ud.type === "circle") {
-                                    const dcenter = Math.hypot(
-                                        px - ud.center.x,
-                                        py - ud.center.y,
-                                    );
-                                    const dr = Math.abs(dcenter - ud.radius);
-                                    if (dr < bestDist) {
-                                        bestDist = dr;
-                                        best = {
-                                            kind: "circle",
-                                            obj: child,
-                                            meta: ud,
-                                            dist: dr,
-                                        };
-                                    }
-                                }
-                            }
-
-                            console.log(
-                                "[PICK DEBUG] Checked:",
-                                checkedCount,
-                                "Skipped:",
-                                skippedCount,
-                                "Best dist:",
-                                bestDist,
-                                "Max:",
-                                maxDistance,
-                            );
-
-                            if (bestDist <= maxDistance) return best;
-                            return null;
-                        }
                         const nearest = findNearestLocal(world, threshold);
                         console.log("[PICK] Nearest result:", nearest);
                         handleSelection(nearest, e.clientX, e.clientY);
@@ -1542,7 +1508,8 @@
                     { passive: true },
                 );
 
-                // Hide tooltip when user moves pointer significantly
+                // Auto-highlight on hover and hide tooltip when dragging
+                let hoverTimeout = null;
                 state.renderer.domElement.addEventListener(
                     "pointermove",
                     (e) => {
@@ -1554,7 +1521,72 @@
                                 if (measurementEl)
                                     measurementEl.style.display = "none";
                             }
+                            return;
                         }
+
+                        // Auto-highlight on hover
+                        if (hoverTimeout) clearTimeout(hoverTimeout);
+                        hoverTimeout = setTimeout(() => {
+                            if (!selected && !state.measureMode) {
+                                try {
+                                    const world = toWorld(e);
+                                    const worldPerPixel =
+                                        (state.camera.top -
+                                            state.camera.bottom) /
+                                        container.getBoundingClientRect()
+                                            .height;
+                                    const threshold = Math.max(
+                                        1e-6,
+                                        10 * worldPerPixel,
+                                    );
+                                    const nearest = findNearestLocal(
+                                        world,
+                                        threshold,
+                                    );
+
+                                    if (nearest) {
+                                        const kind = nearest.kind;
+                                        if (kind === "line") {
+                                            makeHighlightLine(
+                                                nearest.segment.a.x,
+                                                nearest.segment.a.y,
+                                                nearest.segment.b.x,
+                                                nearest.segment.b.y,
+                                                0xff4444,
+                                            );
+                                        } else if (kind === "polyline") {
+                                            makeHighlightLine(
+                                                nearest.segment.a.x,
+                                                nearest.segment.a.y,
+                                                nearest.segment.b.x,
+                                                nearest.segment.b.y,
+                                                0xff4444,
+                                            );
+                                        } else if (kind === "circle") {
+                                            makeHighlightCircle(
+                                                nearest.meta.center,
+                                                nearest.meta.radius,
+                                                0xff4444,
+                                            );
+                                        }
+                                    } else {
+                                        clearHighlight();
+                                    }
+                                } catch (err) {
+                                    // Silently ignore hover errors
+                                }
+                            }
+                        }, 50);
+                    },
+                    { passive: true },
+                );
+
+                // Clear hover highlight when mouse leaves canvas
+                state.renderer.domElement.addEventListener(
+                    "mouseleave",
+                    () => {
+                        if (hoverTimeout) clearTimeout(hoverTimeout);
+                        if (!selected) clearHighlight();
                     },
                     { passive: true },
                 );
@@ -1579,6 +1611,8 @@
                     visualGroup: null,
                     dragging: null, // { point: 'p1' | 'p2', offset: {x, y} }
                     snapRadius: 15, // pixels - radius to snap to geometry
+                    placingFirstPoint: false,
+                    placingSecondPoint: false,
                 };
 
                 // Find nearest snap point (endpoint, center, etc)
@@ -1884,10 +1918,11 @@
                     measureState.point1 = null;
                     measureState.point2 = null;
                     measureState.dragging = null;
+                    measureState.placingFirstPoint = true;
                     measureBtn.classList.add("active");
                     measureToolbar.classList.add("active");
                     measureInstructions.textContent =
-                        "Mova o cursor para posicionar o primeiro ponto";
+                        "Mova o mouse e clique para colocar o primeiro ponto";
                     measureResult.textContent = "";
                     // Disable orbit controls during measurement
                     if (state.controls) state.controls.enabled = false;
@@ -1898,6 +1933,8 @@
                     measureState.point1 = null;
                     measureState.point2 = null;
                     measureState.dragging = null;
+                    measureState.placingFirstPoint = false;
+                    measureState.placingSecondPoint = false;
                     if (measureState.visualGroup) {
                         state.overlayGroup.remove(measureState.visualGroup);
                         measureState.visualGroup = null;
@@ -1912,12 +1949,13 @@
                     measureState.point1 = null;
                     measureState.point2 = null;
                     measureState.dragging = null;
+                    measureState.placingFirstPoint = true;
                     if (measureState.visualGroup) {
                         state.overlayGroup.remove(measureState.visualGroup);
                         measureState.visualGroup = null;
                     }
                     measureInstructions.textContent =
-                        "Mova o cursor para posicionar o primeiro ponto";
+                        "Mova o mouse e clique para colocar o primeiro ponto";
                     measureResult.textContent = "";
                 }
 
@@ -1981,7 +2019,7 @@
                                     };
                                 }
                                 updateMeasureVisuals();
-                            } else if (!measureState.point1) {
+                            } else if (measureState.placingFirstPoint) {
                                 // First point follows cursor
                                 measureState.point1 = {
                                     x: finalPos.x,
@@ -1990,7 +2028,7 @@
                                     preview: true,
                                 };
                                 updateMeasureVisuals();
-                            } else if (!measureState.point2) {
+                            } else if (measureState.placingSecondPoint) {
                                 // Second point follows cursor
                                 measureState.point2 = {
                                     x: finalPos.x,
@@ -2082,37 +2120,42 @@
                             return;
                         }
 
-                        // Place point
-                        if (
-                            measureState.point1 &&
-                            measureState.point1.preview
-                        ) {
+                        // Place points in sequence
+                        if (measureState.placingFirstPoint) {
                             // Confirm first point
-                            measureState.point1.preview = false;
-                            measureInstructions.textContent =
-                                "Clique para colocar o segundo ponto";
-                            console.log(
-                                "[MEASURE] P1 placed:",
-                                measureState.point1,
-                            );
-                        } else if (
-                            measureState.point2 &&
-                            measureState.point2.preview
-                        ) {
+                            if (measureState.point1) {
+                                measureState.point1.preview = false;
+                                measureState.placingFirstPoint = false;
+                                measureState.placingSecondPoint = true;
+                                measureInstructions.textContent =
+                                    "Mova o mouse e clique para colocar o segundo ponto";
+                                console.log(
+                                    "[MEASURE] P1 placed:",
+                                    measureState.point1,
+                                );
+                            }
+                        } else if (measureState.placingSecondPoint) {
                             // Confirm second point
-                            measureState.point2.preview = false;
-                            const distance = Math.hypot(
-                                measureState.point2.x - measureState.point1.x,
-                                measureState.point2.y - measureState.point1.y,
-                            );
-                            console.log(
-                                "[MEASURE] P1:",
-                                measureState.point1,
-                                "P2:",
-                                measureState.point2,
-                                "Distance:",
-                                distance,
-                            );
+                            if (measureState.point2) {
+                                measureState.point2.preview = false;
+                                measureState.placingSecondPoint = false;
+                                const distance = Math.hypot(
+                                    measureState.point2.x -
+                                        measureState.point1.x,
+                                    measureState.point2.y -
+                                        measureState.point1.y,
+                                );
+                                measureInstructions.textContent =
+                                    "Medição concluída - Arraste os pontos para ajustar";
+                                console.log(
+                                    "[MEASURE] P1:",
+                                    measureState.point1,
+                                    "P2:",
+                                    measureState.point2,
+                                    "Distance:",
+                                    distance,
+                                );
+                            }
                         }
                     } catch (err) {
                         console.error("Measure up error:", err);
