@@ -1155,26 +1155,35 @@
                         ndcY,
                     );
 
-                    // For orthographic camera viewing from above (standard 2D view)
-                    // We can use a simpler approach
+                    // For orthographic camera, we need to account for zoom and pan
+                    // The camera bounds are scaled by zoom and offset by target position
                     const cam = state.camera;
-                    const width = cam.right - cam.left;
-                    const height = cam.top - cam.bottom;
+                    const zoom = cam.zoom || 1;
 
-                    const worldX = cam.left + (ndcX + 1) * 0.5 * width;
-                    const worldY = cam.bottom + (ndcY + 1) * 0.5 * height;
+                    // Get the actual viewport dimensions in world units after zoom
+                    const viewWidth = (cam.right - cam.left) / zoom;
+                    const viewHeight = (cam.top - cam.bottom) / zoom;
+
+                    // Get camera target (where the camera is looking at - affected by pan)
+                    const target = state.controls
+                        ? state.controls.target
+                        : new THREE.Vector3(0, 0, 0);
+
+                    // Calculate world position
+                    // NDC ranges from -1 to 1, convert to 0 to 1 range
+                    const worldX = target.x + (ndcX * viewWidth) / 2;
+                    const worldY = target.y + (ndcY * viewHeight) / 2;
 
                     console.log(
                         "[toWorld] World:",
                         worldX,
                         worldY,
-                        "Camera bounds:",
-                        {
-                            left: cam.left,
-                            right: cam.right,
-                            top: cam.top,
-                            bottom: cam.bottom,
-                        },
+                        "Zoom:",
+                        zoom,
+                        "Target:",
+                        { x: target.x, y: target.y },
+                        "ViewSize:",
+                        { w: viewWidth, h: viewHeight },
                     );
 
                     return { x: worldX, y: worldY, z: 0 };
