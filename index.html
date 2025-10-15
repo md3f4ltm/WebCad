@@ -1674,45 +1674,89 @@
                     return bestSnap;
                 }
 
-                // Create simple small circle marker
-                function createCircleMarker(x, y, color, size = 4) {
-                    // very small simple circle for measurement handles
-                    const segments = 16;
-                    const radius = size;
-                    const geometry = new THREE.BufferGeometry();
-                    const positions = [];
-
-                    for (let i = 0; i <= segments; i++) {
-                        const angle = (i / segments) * Math.PI * 2;
-                        positions.push(
-                            x + Math.cos(angle) * radius,
-                            y + Math.sin(angle) * radius,
-                            0,
-                        );
-                    }
-
-                    geometry.setAttribute(
+                // Create simple small point marker (single points for handles)
+                function createPointMarker(x, y, color, size = 4) {
+                    // Create a single vertex Points object; size is in screen pixels (sizeAttenuation = false)
+                    const geom = new THREE.BufferGeometry();
+                    const pos = new Float32Array([x, y, 0]);
+                    geom.setAttribute(
                         "position",
-                        new THREE.BufferAttribute(
-                            new Float32Array(positions),
-                            3,
-                        ),
+                        new THREE.BufferAttribute(pos, 3),
                     );
 
-                    const material = new THREE.LineBasicMaterial({
+                    const material = new THREE.PointsMaterial({
+                        color: color,
+                        size: size,
+                        sizeAttenuation: false,
+                        depthTest: false,
+                    });
+
+                    const point = new THREE.Points(geom, material);
+                    point.renderOrder = 999;
+                    return point;
+                }
+
+                // Create a world-space circle around (x,y) that scales with camera zoom.
+                // pixelRadius is the desired radius in screen pixels; we convert to world units.
+                function createWorldCircle(
+                    x,
+                    y,
+                    color,
+                    pixelRadius = 12,
+                    segments = 24,
+                ) {
+                    if (!state || !state.camera || !state.renderer) {
+                        // fallback: no camera yet — return an empty group
+                        const g = new THREE.Group();
+                        return g;
+                    }
+                    // compute world units per pixel based on orthographic camera and current zoom
+                    const h = state.renderer.domElement.height || 1;
+                    const zoom = state.camera.zoom || 1;
+                    const worldPerPixel =
+                        (state.camera.top - state.camera.bottom) / (zoom * h);
+
+                    const worldRadius = Math.max(
+                        0.0001,
+                        pixelRadius * worldPerPixel,
+                    );
+
+                    const geom = new THREE.BufferGeometry();
+                    const positions = new Float32Array((segments + 1) * 3);
+                    for (let i = 0; i <= segments; i++) {
+                        const angle = (i / segments) * Math.PI * 2;
+                        positions[i * 3 + 0] =
+                            x + Math.cos(angle) * worldRadius;
+                        positions[i * 3 + 1] =
+                            y + Math.sin(angle) * worldRadius;
+                        positions[i * 3 + 2] = 0;
+                    }
+                    geom.setAttribute(
+                        "position",
+                        new THREE.BufferAttribute(positions, 3),
+                    );
+                    const mat = new THREE.LineBasicMaterial({
                         color: color,
                         linewidth: 1,
                         depthTest: false,
                     });
-
-                    const circle = new THREE.LineLoop(geometry, material);
-                    circle.renderOrder = 999;
-                    return circle;
+                    const loop = new THREE.LineLoop(geom, mat);
+                    loop.renderOrder = 999;
+                    return loop;
                 }
 
-                // Create snap indicator (small cross)
-                function createSnapIndicator(x, y) {
-                    const size = 8;
+                // Create snap indicator (cross) sized in screen pixels and converted to world units
+                function createSnapIndicator(x, y, pixelSize = 6) {
+                    if (!state || !state.camera || !state.renderer) {
+                        // Fallback if camera/renderer not ready
+                        pixelSize = Math.max(1, pixelSize);
+                    }
+                    const h = state.renderer?.domElement?.height || 1;
+                    const zoom = state.camera?.zoom || 1;
+                    // Convert desired pixel size to world units for current zoom
+                    const worldPerPixel =
+                        (state.camera.top - state.camera.bottom) / (zoom * h);
+                    const size = Math.max(0.0001, pixelSize * worldPerPixel);
                     const geometry = new THREE.BufferGeometry();
                     const positions = new Float32Array([
                         x - size,
@@ -1734,8 +1778,10 @@
                     );
                     const material = new THREE.LineBasicMaterial({
                         color: 0xff9900,
-                        linewidth: 2,
+                        linewidth: 1,
                         depthTest: false,
+                        transparent: true,
+                        opacity: 0.9,
                     });
                     const cross = new THREE.LineSegments(geometry, material);
                     cross.renderOrder = 998;
@@ -1761,8 +1807,18 @@
 
                     if (!p1) return;
 
-                    // Draw first point (small simple circle)
-                    const circle1 = createCircleMarker(p1.x, p1.y, 0x00ff00);
+                    // Draw first point (small simple point marker)
+                    const point1 = createPointMarker(p1.x, p1.y, 0x00ff00);
+                    measureState.visualGroup.add(point1);
+
+                    // Also add a world-space circle that scales with zoom (keeps consistent appearance)
+                    const circle1 = createWorldCircle(
+                        p1.x,
+                        p1.y,
+                        0x00ff00,
+                        6,
+                        24,
+                    );
                     measureState.visualGroup.add(circle1);
 
                     if (p1.snap) {
@@ -1771,11 +1827,17 @@
                     }
 
                     if (p2) {
-                        // Draw second point (small simple circle)
-                        const circle2 = createCircleMarker(
+                        // Draw second point (small simple point marker)
+                        const point2 = createPointMarker(p2.x, p2.y, 0x00ff00);
+                        measureState.visualGroup.add(point2);
+
+                        // Also add a world-space circle for second point
+                        const circle2 = createWorldCircle(
                             p2.x,
                             p2.y,
                             0x00ff00,
+                            6,
+                            24,
                         );
                         measureState.visualGroup.add(circle2);
 
@@ -1870,6 +1932,22 @@
                 cancelMeasure.addEventListener("click", () => {
                     resetMeasure();
                 });
+
+                // Update measure visuals when camera or controls change (so world-space circle scales properly)
+                if (
+                    state.controls &&
+                    typeof state.controls.addEventListener === "function"
+                ) {
+                    state.controls.addEventListener("change", () => {
+                        try {
+                            if (measureState && measureState.visualGroup) {
+                                updateMeasureVisuals();
+                            }
+                        } catch (e) {
+                            // ignore
+                        }
+                    });
+                }
 
                 // Mouse move - cursor tracking and dragging
                 state.renderer.domElement.addEventListener(
