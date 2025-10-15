@@ -1133,32 +1133,58 @@
                 // This replicates the original worldFromMouseEvent logic directly so we don't
                 // rely on a removed helper.
                 function toWorld(e) {
+                    if (!state.camera || !state.renderer) {
+                        console.error(
+                            "[toWorld] Camera or renderer not initialized",
+                        );
+                        return { x: 0, y: 0, z: 0 };
+                    }
+
                     const rect =
                         state.renderer.domElement.getBoundingClientRect();
                     const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
                     const ndcY =
                         -((e.clientY - rect.top) / rect.height) * 2 + 1;
-                    // Use a mid-depth value and unproject to get a world-space direction
-                    const v = new THREE.Vector3(ndcX, ndcY, 0.5);
-                    v.unproject(state.camera);
-                    const dir = v
-                        .clone()
-                        .sub(state.camera.position)
-                        .normalize();
-                    // Intersect the ray from camera through v with the Z=0 plane
-                    // t = (z_plane - camZ) / dirZ
-                    const camZ = state.camera.position.z;
-                    const t = (0 - camZ) / dir.z;
-                    const p = state.camera.position
-                        .clone()
-                        .add(dir.multiplyScalar(t));
-                    return p;
+
+                    console.log(
+                        "[toWorld] Client:",
+                        e.clientX,
+                        e.clientY,
+                        "NDC:",
+                        ndcX,
+                        ndcY,
+                    );
+
+                    // For orthographic camera viewing from above (standard 2D view)
+                    // We can use a simpler approach
+                    const cam = state.camera;
+                    const width = cam.right - cam.left;
+                    const height = cam.top - cam.bottom;
+
+                    const worldX = cam.left + (ndcX + 1) * 0.5 * width;
+                    const worldY = cam.bottom + (ndcY + 1) * 0.5 * height;
+
+                    console.log(
+                        "[toWorld] World:",
+                        worldX,
+                        worldY,
+                        "Camera bounds:",
+                        {
+                            left: cam.left,
+                            right: cam.right,
+                            top: cam.top,
+                            bottom: cam.bottom,
+                        },
+                    );
+
+                    return { x: worldX, y: worldY, z: 0 };
                 }
 
                 // Make toWorld accessible globally for measure tool
                 state.toWorld = toWorld;
 
                 function makeHighlightLine(ax, ay, bx, by, color = 0xffff00) {
+                    console.log("[HIGHLIGHT] Line:", { ax, ay, bx, by });
                     clearHighlight();
                     const pos = new Float32Array([ax, ay, 0, bx, by, 0]);
                     const geom = new THREE.BufferGeometry();
@@ -1173,7 +1199,8 @@
                     highlight = new THREE.LineSegments(geom, mat);
                     // ensure highlight renders above small z-fighting by nudging slightly in z
                     highlight.position.z = 0.001;
-                    state.group.add(highlight);
+                    if (state.overlayGroup) state.overlayGroup.add(highlight);
+                    else state.group.add(highlight);
                 }
 
                 function makeHighlightPolyline(pts, color = 0xffff00) {
@@ -1338,11 +1365,18 @@
 
                     try {
                         const world = toWorld(e);
+                        console.log("[PICK] Click at world:", world);
                         // threshold in world units (scale with view)
                         const h = state.renderer.domElement.height || 1;
                         const worldPerPixel =
                             (state.camera.top - state.camera.bottom) / h;
                         const threshold = Math.max(1e-6, 10 * worldPerPixel); // ~10px
+                        console.log(
+                            "[PICK] Threshold:",
+                            threshold,
+                            "Children count:",
+                            state.group.children.length,
+                        );
                         // use existing nearest finder if present; fallback to scanning children
                         // Local nearest-finder (scans current geometry). Avoids relying on an external function.
                         function findNearestLocal(worldPt, maxDistance) {
@@ -1444,6 +1478,7 @@
                             return null;
                         }
                         const nearest = findNearestLocal(world, threshold);
+                        console.log("[PICK] Nearest result:", nearest);
                         handleSelection(nearest, e.clientX, e.clientY);
                     } catch (err) {
                         console.error("pointer selection failed", err);
@@ -1589,6 +1624,7 @@
 
                         try {
                             const world = state.toWorld(e);
+                            console.log("[MEASURE] Click at world:", world);
 
                             if (!state.measurePoint1) {
                                 // First point
@@ -1720,12 +1756,28 @@
                         try {
                             const world = state.toWorld(e);
 
-                            // Remove old preview line if exists
-                            const oldPreview = state.overlayGroup.children.find(
-                                (c) => c.userData.isPreview,
-                            );
-                            if (oldPreview)
-                                state.overlayGroup.remove(oldPreview);
+                            // Remove old preview line if exists (find and remove preview objects)
+                            for (
+                                let i = state.overlayGroup.children.length - 1;
+                                i >= 0;
+                                i--
+                            ) {
+                                const child = state.overlayGroup.children[i];
+                                if (
+                                    child.userData &&
+                                    child.userData.isPreview
+                                ) {
+                                    state.overlayGroup.remove(child);
+                                    if (child.geometry)
+                                        child.geometry.dispose();
+                                    if (child.material)
+                                        child.material.dispose();
+                                }
+                            }
+
+                            // OLD BROKEN CODE - REMOVE
+                            /*
+                             */
 
                             // Draw preview line
                             const p1 = state.measurePoint1;
