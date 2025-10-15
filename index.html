@@ -1,0 +1,967 @@
+<!doctype html>
+<html lang="pt">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>DXF Viewer (2D - @dxfjs/parser)</title>
+        <link
+            rel="icon"
+            href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Crect width='32' height='32' fill='%23111'/%3E%3Ctext x='50%25' y='50%25' dy='.35em' text-anchor='middle' fill='%23ddd' font-family='monospace' font-size='16'%3ED%3C/text%3E%3C/svg%3E"
+        />
+        <style>
+            :root {
+                color-scheme: dark;
+            }
+            html,
+            body {
+                margin: 0;
+                height: 100%;
+                background: #111;
+                color: #ddd;
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    "Segoe UI",
+                    Roboto,
+                    "Helvetica Neue",
+                    Arial,
+                    sans-serif;
+                overflow: hidden;
+            }
+            #topbar {
+                position: fixed;
+                z-index: 10;
+                top: 8px;
+                left: 8px;
+                right: 8px;
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                background: rgba(0, 0, 0, 0.35);
+                padding: 6px 8px;
+                border-radius: 8px;
+            }
+            #topbar input[type="file"],
+            #topbar button {
+                background: #222;
+                color: #ddd;
+                border: 1px solid #444;
+                padding: 6px 10px;
+                border-radius: 6px;
+                cursor: pointer;
+            }
+            #topbar .hint {
+                margin-left: auto;
+                opacity: 0.8;
+                font-size: 12px;
+            }
+            #viewer {
+                position: fixed;
+                left: 0;
+                right: 0;
+                top: 0;
+                bottom: 0;
+                width: 100%;
+                height: 100%;
+                overflow: hidden;
+            }
+            #status {
+                position: fixed;
+                left: 50%;
+                top: 16px;
+                transform: translateX(-50%);
+                z-index: 20;
+                padding: 8px 12px;
+                border-radius: 8px;
+                background: rgba(0, 0, 0, 0.65);
+                color: #ffd;
+                display: none;
+                max-width: 70vw;
+                text-align: center;
+                white-space: pre-wrap;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="topbar">
+            <input id="file" type="file" accept=".dxf" />
+            <button id="fit">Enquadrar</button>
+            <div class="hint">
+                Arrastar p/ pan • Roda p/ zoom • Solte DXF aqui
+            </div>
+        </div>
+        <div id="viewer"></div>
+        <div id="status"></div>
+
+        <script type="module">
+            import { Parser } from "https://esm.sh/@dxfjs/parser@0.3.2";
+            import * as THREE from "https://esm.sh/three@0.160.0";
+            import { OrbitControls } from "https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+
+            // UI helpers
+            const el = (id) => document.getElementById(id);
+            const statusEl = el("status");
+            function showStatus(text, timeout = 2500) {
+                if (!text) {
+                    statusEl.style.display = "none";
+                    return;
+                }
+                statusEl.textContent = text;
+                statusEl.style.display = "block";
+                if (timeout)
+                    setTimeout(() => {
+                        statusEl.style.display = "none";
+                    }, timeout);
+            }
+            const toRad = (deg) => (deg * Math.PI) / 180;
+
+            // 2D Viewer (Orthographic)
+            const container = el("viewer");
+            const state = {
+                scene: null,
+                camera: null,
+                renderer: null,
+                controls: null,
+                group: null,
+                anim: null,
+                baseSize: 100, // world units height at zoom=1
+            };
+
+            init2D();
+
+            function init2D() {
+                if (state.renderer) return;
+                const rect = container.getBoundingClientRect();
+
+                state.scene = new THREE.Scene();
+                state.scene.background = new THREE.Color(0x111111);
+
+                const aspect = Math.max(rect.width / rect.height, 1e-6);
+                const halfH = state.baseSize / 2;
+                const halfW = (state.baseSize * aspect) / 2;
+                state.camera = new THREE.OrthographicCamera(
+                    -halfW,
+                    halfW,
+                    halfH,
+                    -halfH,
+                    -1e9,
+                    1e9,
+                );
+                state.camera.position.set(0, 0, 100);
+                state.camera.up.set(0, 1, 0);
+                state.camera.lookAt(0, 0, 0);
+
+                state.renderer = new THREE.WebGLRenderer({ antialias: true });
+                state.renderer.setPixelRatio(
+                    Math.min(devicePixelRatio || 1, 2),
+                );
+                state.renderer.setSize(rect.width, rect.height);
+                container.appendChild(state.renderer.domElement);
+
+                state.controls = new OrbitControls(
+                    state.camera,
+                    state.renderer.domElement,
+                );
+                state.controls.enableRotate = false;
+                state.controls.enableDamping = true;
+                state.controls.dampingFactor = 0.08;
+                state.controls.screenSpacePanning = true;
+                state.controls.mouseButtons = {
+                    LEFT: THREE.MOUSE.PAN,
+                    MIDDLE: THREE.MOUSE.DOLLY,
+                    RIGHT: THREE.MOUSE.PAN,
+                };
+                state.controls.touches = {
+                    ONE: THREE.TOUCH.PAN,
+                    TWO: THREE.TOUCH.DOLLY_PAN,
+                };
+
+                // Helpers (not part of bounds)
+                const grid = new THREE.GridHelper(100, 20, 0x333333, 0x222222);
+                grid.rotation.x = Math.PI / 2; // XY plane
+                state.scene.add(grid);
+                const axes = new THREE.AxesHelper(10);
+                state.scene.add(axes);
+
+                state.group = new THREE.Group();
+                state.scene.add(state.group);
+
+                function loop() {
+                    state.anim = requestAnimationFrame(loop);
+                    state.controls.update();
+                    state.renderer.render(state.scene, state.camera);
+                }
+                loop();
+
+                window.addEventListener("resize", handleResize2D);
+
+                // Drag & drop
+                ["dragenter", "dragover", "dragleave", "drop"].forEach((ev) => {
+                    container.addEventListener(ev, (e) => e.preventDefault());
+                });
+                container.addEventListener("drop", async (e) => {
+                    const f = e.dataTransfer.files?.[0];
+                    if (!f) return;
+                    await loadFile(f);
+                });
+            }
+
+            function handleResize2D() {
+                if (!state.renderer) return;
+                const rect = container.getBoundingClientRect();
+                state.renderer.setSize(rect.width, rect.height);
+                const aspect = Math.max(rect.width / rect.height, 1e-6);
+                const halfH = state.baseSize / 2;
+                const halfW = (state.baseSize * aspect) / 2;
+                state.camera.left = -halfW;
+                state.camera.right = halfW;
+                state.camera.top = halfH;
+                state.camera.bottom = -halfH;
+                state.camera.updateProjectionMatrix();
+            }
+
+            function clear2D() {
+                if (!state.group) return;
+                while (state.group.children.length) {
+                    const c = state.group.children.pop();
+                    c.geometry?.dispose?.();
+                    c.material?.dispose?.();
+                }
+            }
+
+            // DXF -> Three helpers
+            function aciToHex(n) {
+                const map = {
+                    1: 0xff0000, // red
+                    2: 0xffff00, // yellow
+                    3: 0x00ff00, // green
+                    4: 0x00ffff, // cyan
+                    5: 0x0000ff, // blue
+                    6: 0xff00ff, // magenta
+                    7: 0xffffff, // white
+                    8: 0x808080, // gray
+                    9: 0xc0c0c0, // light gray
+                };
+                if (n in map) return map[n];
+                if (n >= 10 && n <= 255) {
+                    const hue = ((n - 10) / 245) * 360;
+                    return hsvToHex(hue, 0.7, 1.0);
+                }
+                return 0x00ffff; // default cyan
+            }
+            function hsvToHex(h, s, v) {
+                const c = v * s;
+                const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+                const m = v - c;
+                let r = 0,
+                    g = 0,
+                    b = 0;
+                if (0 <= h && h < 60) [r, g, b] = [c, x, 0];
+                else if (60 <= h && h < 120) [r, g, b] = [x, c, 0];
+                else if (120 <= h && h < 180) [r, g, b] = [0, c, x];
+                else if (180 <= h && h < 240) [r, g, b] = [0, x, c];
+                else if (240 <= h && h < 300) [r, g, b] = [x, 0, c];
+                else [r, g, b] = [c, 0, x];
+                const R = Math.round((r + m) * 255);
+                const G = Math.round((g + m) * 255);
+                const B = Math.round((b + m) * 255);
+                return (R << 16) | (G << 8) | B;
+            }
+            function colorFromEntity(ent, dxf) {
+                // Prefer trueColor (24-bit) if present, then ACI, then layer color, otherwise cyan.
+                try {
+                    const tc =
+                        ent?.trueColor ??
+                        ent?.truecolor ??
+                        ent?.trueColorValue ??
+                        ent?.true_color ??
+                        ent?.truecolour ??
+                        null;
+                    if (typeof tc === "number" && tc !== 0) {
+                        // Mask to 24-bit RGB
+                        const col = tc & 0xffffff;
+                        console.debug(
+                            "[DXF COLOR] using trueColor ->",
+                            "#" + col.toString(16).padStart(6, "0"),
+                            ent,
+                        );
+                        return col;
+                    }
+                } catch (e) {
+                    // ignore
+                }
+                const aci =
+                    ent?.colorNumber ??
+                    ent?.color ??
+                    ent?.aci ??
+                    ent?.Color ??
+                    null;
+                if (typeof aci === "number" && aci >= 1 && aci <= 255) {
+                    const col = aciToHex(aci);
+                    console.debug(
+                        "[DXF COLOR] using ACI",
+                        aci,
+                        "->",
+                        "#" + col.toString(16).padStart(6, "0"),
+                    );
+                    return col;
+                }
+                // Try layer color from dxf.tables (various shapes)
+                try {
+                    const layerName =
+                        ent?.layer ?? ent?.layerName ?? ent?.Layer;
+                    if (dxf && layerName) {
+                        // try common table shapes: { layer: { records: [...] } } or tables.layer.records
+                        const tbl = dxf.tables ?? dxf?.tables;
+                        const candidates =
+                            tbl?.layer?.records ??
+                            tbl?.LAYER?.records ??
+                            tbl?.layers ??
+                            tbl?.layer ??
+                            null;
+                        if (Array.isArray(candidates)) {
+                            const rec = candidates.find(
+                                (r) =>
+                                    r?.name === layerName ||
+                                    r?.Name === layerName ||
+                                    r?.NAME === layerName,
+                            );
+                            if (rec) {
+                                const lc =
+                                    rec?.color ??
+                                    rec?.colorNumber ??
+                                    rec?.Color ??
+                                    null;
+                                if (typeof lc === "number") {
+                                    console.debug(
+                                        "[DXF COLOR] using layer color",
+                                        layerName,
+                                        lc,
+                                    );
+                                    return aciToHex(lc);
+                                }
+                            }
+                        } else if (
+                            candidates &&
+                            typeof candidates === "object"
+                        ) {
+                            const rec =
+                                candidates[layerName] ||
+                                candidates.records?.find?.(
+                                    (r) =>
+                                        r?.name === layerName ||
+                                        r?.Name === layerName,
+                                );
+                            const lc =
+                                rec?.color ??
+                                rec?.colorNumber ??
+                                rec?.Color ??
+                                null;
+                            if (typeof lc === "number") {
+                                console.debug(
+                                    "[DXF COLOR] using layer color (obj)",
+                                    layerName,
+                                    lc,
+                                );
+                                return aciToHex(lc);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    // ignore
+                }
+                return 0x00ffff;
+            }
+
+            function addLine2D(a, b, color = 0x00ffff) {
+                const pos = new Float32Array([a.x, a.y, 0, b.x, b.y, 0]);
+                const geom = new THREE.BufferGeometry();
+                geom.setAttribute(
+                    "position",
+                    new THREE.BufferAttribute(pos, 3),
+                );
+                const mat = new THREE.LineBasicMaterial({ color });
+                state.group.add(new THREE.LineSegments(geom, mat));
+            }
+
+            function addPolyline2D(pts, color = 0x00ffff) {
+                if (pts.length < 2) return;
+                const pos = new Float32Array((pts.length - 1) * 6);
+                for (let i = 0; i < pts.length - 1; i++) {
+                    const a = pts[i],
+                        b = pts[i + 1];
+                    pos.set([a.x, a.y, 0, b.x, b.y, 0], i * 6);
+                }
+                const geom = new THREE.BufferGeometry();
+                geom.setAttribute(
+                    "position",
+                    new THREE.BufferAttribute(pos, 3),
+                );
+                const mat = new THREE.LineBasicMaterial({ color });
+                state.group.add(new THREE.LineSegments(geom, mat));
+            }
+
+            function addArc2D(
+                center,
+                radius,
+                startDeg,
+                endDeg,
+                color = 0x00ffff,
+            ) {
+                const start = toRad(startDeg);
+                const end = toRad(endDeg);
+                let sweep = end - start;
+                if (sweep === 0) sweep = Math.PI * 2; // full circle if start=end
+                const segs = Math.max(
+                    32,
+                    Math.ceil(Math.abs(radius * sweep) / 2),
+                );
+                const pts = [];
+                for (let i = 0; i <= segs; i++) {
+                    const t = i / segs;
+                    const ang = start + t * sweep;
+                    pts.push({
+                        x: center.x + radius * Math.cos(ang),
+                        y: center.y + radius * Math.sin(ang),
+                    });
+                }
+                addPolyline2D(pts, color);
+            }
+
+            function addCircle2D(center, radius, color = 0x00ffff) {
+                const segs = Math.max(64, Math.ceil(radius * 8));
+                const pts = [];
+                for (let i = 0; i <= segs; i++) {
+                    const t = (i / segs) * 2 * Math.PI;
+                    pts.push({
+                        x: center.x + radius * Math.cos(t),
+                        y: center.y + radius * Math.sin(t),
+                    });
+                }
+                addPolyline2D(pts, color);
+            }
+
+            function addPoint2D(pt, color = 0xffaa00, size = 1) {
+                const s = size;
+                addLine2D(
+                    { x: pt.x - s, y: pt.y },
+                    { x: pt.x + s, y: pt.y },
+                    color,
+                );
+                addLine2D(
+                    { x: pt.x, y: pt.y - s },
+                    { x: pt.x, y: pt.y + s },
+                    color,
+                );
+            }
+
+            // Create a sprite from text using a canvas so text appears in the 2D scene.
+            function createTextSprite(text, options = {}) {
+                const {
+                    font = "Arial",
+                    height = 1,
+                    color = 0xffffff,
+                    background = null,
+                    padding = 4,
+                } = options;
+
+                // Create canvas
+                const canvas = document.createElement("canvas");
+                const ctx = canvas.getContext("2d");
+                if (!ctx) return null;
+
+                // Choose a base font size in px that maps approx to model units.
+                // We'll scale the sprite later using height.
+                const basePx = 48; // large for quality
+                ctx.font = `${basePx}px ${font}`;
+                // measure
+                const metrics = ctx.measureText(text || "");
+                const textWidth = Math.ceil(metrics.width);
+                const textHeight = basePx;
+
+                canvas.width = textWidth + padding * 2;
+                canvas.height = textHeight + padding * 2;
+
+                // redraw after resize
+                ctx.font = `${basePx}px ${font}`;
+                if (background) {
+                    ctx.fillStyle = background;
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                }
+                // fill text
+                ctx.fillStyle =
+                    "#" + (color >>> 0).toString(16).padStart(6, "0");
+                ctx.textBaseline = "top";
+                ctx.fillText(text, padding, padding);
+
+                // Create texture
+                const tex = new THREE.CanvasTexture(canvas);
+                tex.minFilter = THREE.LinearFilter;
+                tex.needsUpdate = true;
+
+                const mat = new THREE.SpriteMaterial({
+                    map: tex,
+                    depthTest: false,
+                });
+                const sprite = new THREE.Sprite(mat);
+                // Scale sprite so that its height in world units equals `height`
+                // The canvas height in px corresponds to basePx px -> map to world units.
+                // Use scale factor: height (world units) * (canvas.height / basePx)
+                const scaleFactor = (height / basePx) * canvas.height;
+                sprite.scale.set(
+                    (canvas.width / canvas.height) * scaleFactor,
+                    scaleFactor,
+                    1,
+                );
+
+                // store original text for debugging
+                sprite.userData = { text, options, canvas };
+                return sprite;
+            }
+
+            function addText2D(
+                pos,
+                text,
+                color = 0xffffff,
+                height = 1,
+                rotationDeg = 0,
+            ) {
+                if (!state.group) return;
+                const sprite = createTextSprite(String(text), {
+                    font: "Arial",
+                    height,
+                    color,
+                    background: null,
+                });
+                if (!sprite) return;
+                sprite.position.set(pos.x, pos.y, 0);
+                // rotate sprite in plane (clockwise deg -> rad)
+                sprite.material.rotation = (-rotationDeg * Math.PI) / 180;
+                state.group.add(sprite);
+            }
+
+            function render2DFromDXF(dxf) {
+                clear2D();
+                // Support both legacy flat entity lists and @dxfjs/parser shaped output.
+                // @dxfjs/parser returns `dxf.entities` as an object with arrays:
+                //   { lines: [...], lwPolylines: [...], polylines: [...], arcs: [...], circles: [...], points: [...], texts: [...] }
+                // But some DXF sources or other parsers may produce an array of entity objects.
+                const entsObj = dxf?.entities ?? {};
+                const collect = (key) => {
+                    const v = entsObj[key];
+                    return Array.isArray(v) ? v : [];
+                };
+
+                // If user provided a flat array (older formats), use it too.
+                let flatEntities = [];
+                if (Array.isArray(dxf?.entities)) flatEntities = dxf.entities;
+
+                // Debug: log counts coming from parser-shaped output and flat fallback
+                try {
+                    const counts = {
+                        lines: collect("lines").length,
+                        lwPolylines: collect("lwPolylines").length,
+                        polylines: collect("polylines").length,
+                        arcs: collect("arcs").length,
+                        circles: collect("circles").length,
+                        points: collect("points").length,
+                        texts: collect("texts").length,
+                        flatEntities: flatEntities.length,
+                    };
+                    console.log("[DXF DEBUG] entity counts:", counts);
+                } catch (err) {
+                    console.warn("[DXF DEBUG] failed to compute counts", err);
+                }
+
+                // 1) Handle parser-specific arrays first
+                // Lines (Parser: startX, startY, endX, endY)
+                for (const l of collect("lines")) {
+                    const sx = l.startX ?? l.startx ?? l["startX"];
+                    const sy = l.startY ?? l.starty ?? l["startY"];
+                    const ex = l.endX ?? l.endx ?? l["endX"];
+                    const ey = l.endY ?? l.endy ?? l["endY"];
+                    const color = colorFromEntity(l, dxf);
+                    if (sx != null && sy != null && ex != null && ey != null) {
+                        addLine2D({ x: sx, y: sy }, { x: ex, y: ey }, color);
+                    }
+                }
+
+                // LWPOLYLINEs
+                for (const lw of collect("lwPolylines")) {
+                    const verts = lw.vertices || lw.points || lw.vertices || [];
+                    const pts = verts.filter(Boolean).map((v) => ({
+                        x: v.x ?? v[0] ?? 0,
+                        y: v.y ?? v[1] ?? 0,
+                    }));
+                    if (pts.length >= 2) {
+                        const closed =
+                            !!lw.closed ||
+                            !!lw.shape ||
+                            !!lw.isClosed ||
+                            (!!lw.flag && (lw.flag & 1) === 1);
+                        if (closed) pts.push(pts[0]);
+                        addPolyline2D(pts, colorFromEntity(lw, dxf));
+                    }
+                }
+
+                // POLYLINEs (Parser: polylines[].vertices)
+                for (const pl of collect("polylines")) {
+                    const verts = pl.vertices || [];
+                    const pts = verts
+                        .filter(Boolean)
+                        .map((v) => ({ x: v.x ?? 0, y: v.y ?? 0 }));
+                    if (pts.length >= 2) {
+                        const closed =
+                            !!pl.closed ||
+                            !!pl.shape ||
+                            !!pl.isClosed ||
+                            (!!pl.flag && (pl.flag & 1) === 1);
+                        if (closed) pts.push(pts[0]);
+                        addPolyline2D(pts, colorFromEntity(pl, dxf));
+                    }
+                }
+
+                // ARCs (Parser: centerX, centerY, radius, startAngle, endAngle)
+                for (const a of collect("arcs")) {
+                    const cx = a.centerX ?? a.centerx ?? a["centerX"];
+                    const cy = a.centerY ?? a.centery ?? a["centerY"];
+                    const r = a.radius ?? a["radius"] ?? a.r;
+                    const sa = a.startAngle ?? a.startAngle ?? a.start ?? 0;
+                    const ea = a.endAngle ?? a.endAngle ?? a.end ?? 0;
+                    if (cx != null && cy != null && r != null) {
+                        addArc2D(
+                            { x: cx, y: cy },
+                            r,
+                            sa,
+                            ea,
+                            colorFromEntity(a, dxf),
+                        );
+                    }
+                }
+
+                // CIRCLEs (Parser: centerX, centerY, radius)
+                for (const c of collect("circles")) {
+                    const cx = c.centerX ?? c.centerx ?? c["centerX"];
+                    const cy = c.centerY ?? c.centery ?? c["centerY"];
+                    const r = c.radius ?? c["radius"] ?? c.r;
+                    if (cx != null && cy != null && r != null) {
+                        addCircle2D(
+                            { x: cx, y: cy },
+                            r,
+                            colorFromEntity(c, dxf),
+                        );
+                    }
+                }
+
+                // POINTs (Parser: x, y)
+                for (const p of collect("points")) {
+                    const x = p.x ?? p.x0 ?? p["x"];
+                    const y = p.y ?? p.y0 ?? p["y"];
+                    if (x != null && y != null)
+                        addPoint2D({ x, y }, colorFromEntity(p, dxf), 1);
+                }
+
+                // TEXTs from parser-shaped output (Parser: texts[] with properties like text, x/y or firstAlignmentX/firstAlignmentY)
+                for (const t of collect("texts")) {
+                    // Parser's Text spec may store alignment as firstAlignmentX/Y or as x/y
+                    const px =
+                        t.firstAlignmentX ??
+                        t.firstAlignmentPointX ??
+                        t.x ??
+                        t.x0 ??
+                        t.x1 ??
+                        (t.position && t.position.x) ??
+                        null;
+                    const py =
+                        t.firstAlignmentY ??
+                        t.firstAlignmentPointY ??
+                        t.y ??
+                        t.y0 ??
+                        t.y1 ??
+                        (t.position && t.position.y) ??
+                        null;
+                    const content =
+                        t.text ??
+                        t.value ??
+                        t.string ??
+                        t.contents ??
+                        t.textString ??
+                        t.Text ??
+                        "";
+                    // text height
+                    const height =
+                        t.textHeight ??
+                        t.textHeight ??
+                        t.height ??
+                        t.dxfHeight ??
+                        1;
+                    const rot = t.rotation ?? t.obliqueAngle ?? 0;
+                    if (px != null && py != null && content) {
+                        addText2D(
+                            { x: px, y: py },
+                            content,
+                            colorFromEntity(t, dxf),
+                            height,
+                            rot,
+                        );
+                    }
+                }
+
+                // 2) Fallback: handle flat entity arrays or other shapes (including TEXT)
+                for (const ent of flatEntities) {
+                    const type = String(
+                        ent?.type || ent?.Type || "",
+                    ).toUpperCase();
+                    const color = colorFromEntity(ent, dxf);
+
+                    if (type === "LINE") {
+                        // older shape: ent.start.x / ent.end.x
+                        const sx =
+                            ent.start?.x ??
+                            ent.startX ??
+                            ent.startx ??
+                            ent.x1 ??
+                            null;
+                        const sy =
+                            ent.start?.y ??
+                            ent.startY ??
+                            ent.starty ??
+                            ent.y1 ??
+                            null;
+                        const ex =
+                            ent.end?.x ??
+                            ent.endX ??
+                            ent.endx ??
+                            ent.x2 ??
+                            null;
+                        const ey =
+                            ent.end?.y ??
+                            ent.endY ??
+                            ent.endy ??
+                            ent.y2 ??
+                            null;
+                        if (
+                            sx != null &&
+                            sy != null &&
+                            ex != null &&
+                            ey != null
+                        ) {
+                            addLine2D(
+                                { x: sx, y: sy },
+                                { x: ex, y: ey },
+                                color,
+                            );
+                        }
+                    } else if (type === "LWPOLYLINE" || type === "POLYLINE") {
+                        const verts = ent.vertices || ent.points || [];
+                        const pts = verts
+                            .filter(Boolean)
+                            .map((v) => ({ x: v.x ?? 0, y: v.y ?? 0 }));
+                        if (pts.length >= 2) {
+                            const closed =
+                                !!ent.closed || !!ent.shape || !!ent.isClosed;
+                            if (closed) pts.push(pts[0]);
+                            addPolyline2D(pts, color);
+                        }
+                    } else if (type === "ARC") {
+                        const center = ent.center || {
+                            x: ent.centerX,
+                            y: ent.centerY,
+                        };
+                        const r = ent.radius ?? ent.R ?? null;
+                        const sa = ent.startAngle ?? ent.start ?? 0;
+                        const ea = ent.endAngle ?? ent.end ?? 0;
+                        if (
+                            center &&
+                            center.x != null &&
+                            center.y != null &&
+                            r != null
+                        ) {
+                            addArc2D(center, r, sa, ea, color);
+                        }
+                    } else if (type === "CIRCLE") {
+                        const center = ent.center || {
+                            x: ent.centerX,
+                            y: ent.centerY,
+                        };
+                        const r = ent.radius ?? ent.R ?? null;
+                        if (
+                            center &&
+                            center.x != null &&
+                            center.y != null &&
+                            r != null
+                        ) {
+                            addCircle2D(center, r, color);
+                        }
+                    } else if (type === "POINT") {
+                        const pos = ent.position || ent;
+                        if (pos && pos.x != null && pos.y != null)
+                            addPoint2D({ x: pos.x, y: pos.y }, color, 1);
+                    } else if (type === "TEXT") {
+                        // handle older flat TEXT entities
+                        const px =
+                            ent.firstAlignmentX ??
+                            ent.firstAlignmentPointX ??
+                            ent.x ??
+                            ent.position?.x ??
+                            (ent.start && ent.start.x) ??
+                            null;
+                        const py =
+                            ent.firstAlignmentY ??
+                            ent.firstAlignmentPointY ??
+                            ent.y ??
+                            ent.position?.y ??
+                            (ent.start && ent.start.y) ??
+                            null;
+                        const content =
+                            ent.text ??
+                            ent.value ??
+                            ent.string ??
+                            ent.contents ??
+                            ent.Text ??
+                            "";
+                        const height = ent.textHeight ?? ent.height ?? 1;
+                        const rot = ent.rotation ?? ent.obliqueAngle ?? 0;
+                        if (px != null && py != null && content) {
+                            addText2D(
+                                { x: px, y: py },
+                                content,
+                                color,
+                                height,
+                                rot,
+                            );
+                        }
+                    }
+                    // Extend as needed: ELLIPSE, SPLINE, INSERT, etc.
+                }
+
+                // Debug: report bounding box of drawn group
+                try {
+                    const box = new THREE.Box3().setFromObject(state.group);
+                    console.log("[DXF DEBUG] group bbox:", {
+                        min: box.min
+                            ? { x: box.min.x, y: box.min.y, z: box.min.z }
+                            : null,
+                        max: box.max
+                            ? { x: box.max.x, y: box.max.y, z: box.max.z }
+                            : null,
+                    });
+                } catch (err) {
+                    console.warn("[DXF DEBUG] bbox failed", err);
+                }
+                fit2D(0.05);
+            }
+
+            function fit2D(padding = 0.05) {
+                if (!state.group) return;
+                const box = new THREE.Box3().setFromObject(state.group);
+                if (
+                    !isFinite(box.min.x) ||
+                    !isFinite(box.max.x) ||
+                    box.min.equals(box.max)
+                )
+                    return;
+
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+
+                const rect = container.getBoundingClientRect();
+                const aspect = Math.max(rect.width / rect.height, 1e-6);
+
+                let width = Math.max(size.x, 1e-6);
+                let height = Math.max(size.y, 1e-6);
+                width *= 1 + padding * 2;
+                height *= 1 + padding * 2;
+
+                let viewH = height;
+                if (viewH * aspect < width) {
+                    viewH = width / aspect;
+                }
+
+                state.baseSize = viewH;
+                handleResize2D();
+
+                state.controls.target.set(center.x, center.y, 0);
+                state.camera.position.set(center.x, center.y, 100);
+                state.camera.zoom = 1;
+                state.camera.updateProjectionMatrix();
+                state.controls.update();
+            }
+
+            // Parsing and loading
+            async function parseDXFText(text) {
+                const parser = new Parser();
+                const parsed = await parser.parse(text);
+                // Expose parsed DXF and original text to the window for runtime inspection
+                try {
+                    window.__lastParsedDXF = parsed;
+                    window.__lastDXFText = text;
+                    console.debug(
+                        "[DXF DEBUG] parsed object available as window.__lastParsedDXF",
+                    );
+                } catch (e) {
+                    // ignore in environments that restrict window
+                }
+                return parsed;
+            }
+
+            async function loadUrl(url) {
+                let absUrl;
+                try {
+                    absUrl = new URL(url, window.location.href).href;
+                } catch {
+                    absUrl = url;
+                }
+                showStatus("A carregar: " + absUrl);
+                try {
+                    const res = await fetch(absUrl);
+                    const text = await res.text();
+                    const dxf = await parseDXFText(text);
+                    render2DFromDXF(dxf);
+                    showStatus("Carregado", 1200);
+                } catch (e) {
+                    console.error(e);
+                    showStatus("Erro a carregar DXF", 4000);
+                }
+            }
+
+            async function loadFile(file) {
+                try {
+                    showStatus("A ler ficheiro...");
+                    const text = await file.text();
+                    const dxf = await parseDXFText(text);
+                    console.debug(
+                        "[DXF DEBUG] about to render parsed DXF; entities/tables summary:",
+                        {
+                            entities: dxf?.entities,
+                            tables: dxf?.tables,
+                        },
+                    );
+                    render2DFromDXF(dxf);
+                    // Ensure parsed data and raw text accessible from window for debugging
+                    try {
+                        window.__lastParsedDXF = dxf;
+                        window.__lastDXFText = text;
+                    } catch (e) {
+                        // ignore
+                    }
+                    showStatus("Ficheiro carregado", 1200);
+                } catch (e) {
+                    console.error(e);
+                    showStatus("Erro a ler ficheiro", 4000);
+                }
+            }
+
+            // UI wiring
+            el("file").addEventListener("change", async (e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                await loadFile(f);
+            });
+            el("fit").addEventListener("click", () => fit2D(0.05));
+
+            // Optional: auto-load a DXF when served via HTTP (uncomment to use)
+            // loadUrl(new URL("examples_dxf/bridge.dxf", window.location.href).href).catch(console.warn);
+        </script>
+    </body>
+</html>
