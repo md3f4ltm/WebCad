@@ -1377,6 +1377,22 @@
                             "Children count:",
                             state.group.children.length,
                         );
+
+                        // Debug: show first 3 children userData
+                        console.log("[PICK DEBUG] First 3 children userData:");
+                        for (
+                            let i = 0;
+                            i < Math.min(3, state.group.children.length);
+                            i++
+                        ) {
+                            console.log(
+                                "  Child",
+                                i,
+                                ":",
+                                state.group.children[i].userData,
+                            );
+                        }
+
                         // use existing nearest finder if present; fallback to scanning children
                         // Local nearest-finder (scans current geometry). Avoids relying on an external function.
                         function findNearestLocal(worldPt, maxDistance) {
@@ -1407,9 +1423,17 @@
                                     projy = ay + t * vy;
                                 return Math.hypot(px - projx, py - projy);
                             };
+
+                            let checkedCount = 0;
+                            let skippedCount = 0;
+
                             for (const child of state.group.children) {
                                 const ud = child.userData || {};
-                                if (!ud.type) continue;
+                                if (!ud.type) {
+                                    skippedCount++;
+                                    continue;
+                                }
+                                checkedCount++;
                                 if (ud.type === "line") {
                                     const d = distPointToSegment(
                                         px,
@@ -1474,6 +1498,18 @@
                                     }
                                 }
                             }
+
+                            console.log(
+                                "[PICK DEBUG] Checked:",
+                                checkedCount,
+                                "Skipped:",
+                                skippedCount,
+                                "Best dist:",
+                                bestDist,
+                                "Max:",
+                                maxDistance,
+                            );
+
                             if (bestDist <= maxDistance) return best;
                             return null;
                         }
