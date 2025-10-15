@@ -40,6 +40,7 @@
                 background: rgba(0, 0, 0, 0.35);
                 padding: 6px 8px;
                 border-radius: 8px;
+                flex-wrap: wrap;
             }
             #topbar input[type="file"],
             #topbar button {
@@ -49,11 +50,27 @@
                 padding: 6px 10px;
                 border-radius: 6px;
                 cursor: pointer;
+                font-size: 14px;
+                min-height: 36px;
+                touch-action: manipulation;
+            }
+            #topbar button:active {
+                background: #333;
+            }
+            #topbar button.active {
+                background: #0a84ff;
+                border-color: #0a84ff;
+                color: #fff;
             }
             #topbar .hint {
                 margin-left: auto;
                 opacity: 0.8;
                 font-size: 12px;
+            }
+            @media (max-width: 600px) {
+                #topbar .hint {
+                    display: none;
+                }
             }
             #viewer {
                 position: fixed;
@@ -80,18 +97,102 @@
                 text-align: center;
                 white-space: pre-wrap;
             }
+            .measure-icon {
+                width: 18px;
+                height: 18px;
+                vertical-align: middle;
+                margin-right: 4px;
+            }
+            #measureToolbar {
+                display: none;
+                position: fixed;
+                z-index: 25;
+                bottom: 16px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: rgba(0, 0, 0, 0.9);
+                color: #fff;
+                padding: 16px 20px;
+                border-radius: 12px;
+                border: 2px solid #0a84ff;
+                text-align: center;
+                min-width: 280px;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            }
+            #measureToolbar.active {
+                display: block;
+            }
+            #measureInstructions {
+                font-size: 14px;
+                margin-bottom: 8px;
+                color: #aaa;
+            }
+            #measureResult {
+                margin-top: 8px;
+                font-size: 18px;
+                font-weight: bold;
+                color: #0a84ff;
+                min-height: 24px;
+            }
+            #cancelMeasure {
+                margin-top: 12px;
+                background: #d32f2f;
+                color: #fff;
+                border: none;
+                padding: 10px 16px;
+                border-radius: 8px;
+                cursor: pointer;
+                font-size: 14px;
+                min-height: 40px;
+                touch-action: manipulation;
+                width: 100%;
+            }
+            #cancelMeasure:active {
+                background: #b71c1c;
+            }
         </style>
     </head>
     <body>
         <div id="topbar">
             <input id="file" type="file" accept=".dxf" />
             <button id="fit">Enquadrar</button>
+            <button id="measureBtn">
+                <svg
+                    class="measure-icon"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                >
+                    <path
+                        d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"
+                    />
+                </svg>
+                Medir
+            </button>
             <div class="hint">
                 Arrastar p/ pan • Roda p/ zoom • Solte DXF aqui
             </div>
         </div>
         <div id="viewer"></div>
         <div id="status"></div>
+        <div id="measureToolbar">
+            <div id="measureInstructions">Clique no primeiro ponto</div>
+            <div id="measureResult"></div>
+            <button id="cancelMeasure">Cancelar / Nova Medição</button>
+        </div>
+        <div
+            id="measurement"
+            style="
+                display: none;
+                position: fixed;
+                z-index: 30;
+                padding: 6px 8px;
+                background: rgba(0, 0, 0, 0.75);
+                color: #fff;
+                border-radius: 6px;
+                font-size: 13px;
+                pointer-events: none;
+            "
+        ></div>
 
         <script type="module">
             import { Parser } from "https://esm.sh/@dxfjs/parser@0.3.2";
@@ -185,6 +286,9 @@
 
                 state.group = new THREE.Group();
                 state.scene.add(state.group);
+                // overlay group for highlights/measurements (keeps overlays separate)
+                state.overlayGroup = new THREE.Group();
+                state.scene.add(state.overlayGroup);
 
                 function loop() {
                     state.anim = requestAnimationFrame(loop);
@@ -381,16 +485,27 @@
                     new THREE.BufferAttribute(pos, 3),
                 );
                 const mat = new THREE.LineBasicMaterial({ color });
-                state.group.add(new THREE.LineSegments(geom, mat));
+                const obj = new THREE.LineSegments(geom, mat);
+                // store metadata for picking/measurement
+                obj.userData = {
+                    type: "line",
+                    a: { x: a.x, y: a.y },
+                    b: { x: b.x, y: b.y },
+                    color,
+                    length: Math.hypot(b.x - a.x, b.y - a.y),
+                };
+                state.group.add(obj);
             }
 
             function addPolyline2D(pts, color = 0x00ffff) {
                 if (pts.length < 2) return;
                 const pos = new Float32Array((pts.length - 1) * 6);
+                let total = 0;
                 for (let i = 0; i < pts.length - 1; i++) {
                     const a = pts[i],
                         b = pts[i + 1];
                     pos.set([a.x, a.y, 0, b.x, b.y, 0], i * 6);
+                    total += Math.hypot(b.x - a.x, b.y - a.y);
                 }
                 const geom = new THREE.BufferGeometry();
                 geom.setAttribute(
@@ -398,7 +513,15 @@
                     new THREE.BufferAttribute(pos, 3),
                 );
                 const mat = new THREE.LineBasicMaterial({ color });
-                state.group.add(new THREE.LineSegments(geom, mat));
+                const obj = new THREE.LineSegments(geom, mat);
+                // store metadata for picking/measurement (clone points)
+                obj.userData = {
+                    type: "polyline",
+                    pts: pts.map((p) => ({ x: p.x, y: p.y })),
+                    color,
+                    length: total,
+                };
+                state.group.add(obj);
             }
 
             function addArc2D(
@@ -438,7 +561,21 @@
                         y: center.y + radius * Math.sin(t),
                     });
                 }
+                // create geometry to show circle
                 addPolyline2D(pts, color);
+                // Additionally add a lightweight "metadata marker" object so circles are easy to pick
+                const marker = new THREE.Object3D();
+                marker.position.set(center.x, center.y, 0);
+                marker.userData = {
+                    type: "circle",
+                    center: { x: center.x, y: center.y },
+                    radius,
+                    color,
+                    length: 2 * Math.PI * radius,
+                };
+                // invisible but present under group for picking logic
+                marker.visible = false;
+                state.group.add(marker);
             }
 
             function addPoint2D(pt, color = 0xffaa00, size = 1) {
@@ -959,6 +1096,665 @@
                 await loadFile(f);
             });
             el("fit").addEventListener("click", () => fit2D(0.05));
+
+            // Measurement UI and picking (pointer-based, toggle on repeated clicks, mobile-friendly)
+            (function setupPicking() {
+                const measurementEl = document.getElementById("measurement");
+                let selected = null;
+                let highlight = null;
+                let pointerDownInfo = null;
+
+                function clearHighlight() {
+                    if (highlight) {
+                        highlight.geometry?.dispose?.();
+                        highlight.material?.dispose?.();
+                        if (
+                            state.overlayGroup &&
+                            state.overlayGroup.children.includes(highlight)
+                        )
+                            state.overlayGroup.remove(highlight);
+                        highlight = null;
+                    }
+                }
+
+                function hideMeasurement() {
+                    if (measurementEl) measurementEl.style.display = "none";
+                }
+
+                function showMeasurementAtClient(msg, clientX, clientY) {
+                    if (!measurementEl) return;
+                    measurementEl.textContent = msg;
+                    measurementEl.style.left = clientX + 12 + "px";
+                    measurementEl.style.top = clientY + 12 + "px";
+                    measurementEl.style.display = "block";
+                }
+
+                // Convert a client pointer event to world coordinates on the z=0 plane.
+                // This replicates the original worldFromMouseEvent logic directly so we don't
+                // rely on a removed helper.
+                function toWorld(e) {
+                    const rect =
+                        state.renderer.domElement.getBoundingClientRect();
+                    const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+                    const ndcY =
+                        -((e.clientY - rect.top) / rect.height) * 2 + 1;
+                    // Use a mid-depth value and unproject to get a world-space direction
+                    const v = new THREE.Vector3(ndcX, ndcY, 0.5);
+                    v.unproject(state.camera);
+                    const dir = v
+                        .clone()
+                        .sub(state.camera.position)
+                        .normalize();
+                    // Intersect the ray from camera through v with the Z=0 plane
+                    // t = (z_plane - camZ) / dirZ
+                    const camZ = state.camera.position.z;
+                    const t = (0 - camZ) / dir.z;
+                    const p = state.camera.position
+                        .clone()
+                        .add(dir.multiplyScalar(t));
+                    return p;
+                }
+
+                function makeHighlightLine(ax, ay, bx, by, color = 0xffff00) {
+                    clearHighlight();
+                    const pos = new Float32Array([ax, ay, 0, bx, by, 0]);
+                    const geom = new THREE.BufferGeometry();
+                    geom.setAttribute(
+                        "position",
+                        new THREE.BufferAttribute(pos, 3),
+                    );
+                    const mat = new THREE.LineBasicMaterial({
+                        color,
+                        toneMapped: false,
+                    });
+                    highlight = new THREE.LineSegments(geom, mat);
+                    // ensure highlight renders above small z-fighting by nudging slightly in z
+                    highlight.position.z = 0.001;
+                    state.group.add(highlight);
+                }
+
+                function makeHighlightPolyline(pts, color = 0xffff00) {
+                    clearHighlight();
+                    if (!pts || pts.length < 2) return;
+                    const segs = pts.length - 1;
+                    const pos = new Float32Array(segs * 6);
+                    for (let i = 0; i < segs; i++) {
+                        const a = pts[i],
+                            b = pts[i + 1];
+                        pos.set([a.x, a.y, 0, b.x, b.y, 0], i * 6);
+                    }
+                    const geom = new THREE.BufferGeometry();
+                    geom.setAttribute(
+                        "position",
+                        new THREE.BufferAttribute(pos, 3),
+                    );
+                    const mat = new THREE.LineBasicMaterial({
+                        color,
+                        toneMapped: false,
+                    });
+                    highlight = new THREE.LineSegments(geom, mat);
+                    highlight.position.z = 0.001;
+                    if (state.overlayGroup) state.overlayGroup.add(highlight);
+                    else state.group.add(highlight);
+                }
+
+                function makeHighlightCircle(center, radius, color = 0xffff00) {
+                    clearHighlight();
+                    const segs = 96;
+                    const pos = new Float32Array(segs * 6);
+                    for (let i = 0; i < segs; i++) {
+                        const aang = (i / segs) * Math.PI * 2;
+                        const bang = ((i + 1) / segs) * Math.PI * 2;
+                        const ax = center.x + Math.cos(aang) * radius;
+                        const ay = center.y + Math.sin(aang) * radius;
+                        const bx = center.x + Math.cos(bang) * radius;
+                        const by = center.y + Math.sin(bang) * radius;
+                        pos.set([ax, ay, 0, bx, by, 0], i * 6);
+                    }
+                    const geom = new THREE.BufferGeometry();
+                    geom.setAttribute(
+                        "position",
+                        new THREE.BufferAttribute(pos, 3),
+                    );
+                    const mat = new THREE.LineBasicMaterial({
+                        color,
+                        toneMapped: false,
+                    });
+                    highlight = new THREE.LineSegments(geom, mat);
+                    highlight.position.z = 0.001;
+                    if (state.overlayGroup) state.overlayGroup.add(highlight);
+                    else state.group.add(highlight);
+                }
+
+                // Toggle selection: if clicking same entity, clear; otherwise select new
+                function handleSelection(nearest, clientX, clientY) {
+                    if (!nearest) {
+                        // clicked empty space -> clear
+                        selected = null;
+                        clearHighlight();
+                        hideMeasurement();
+                        return;
+                    }
+
+                    const kind = nearest.kind;
+                    if (
+                        selected &&
+                        selected.obj === nearest.obj &&
+                        selected.kind === kind &&
+                        selected.segment?.a?.x === nearest.segment?.a?.x &&
+                        selected.segment?.b?.x === nearest.segment?.b?.x
+                    ) {
+                        // same object + segment clicked again -> toggle off
+                        selected = null;
+                        clearHighlight();
+                        hideMeasurement();
+                        return;
+                    }
+
+                    // select new
+                    selected = nearest;
+                    if (kind === "line") {
+                        const len = nearest.meta.length;
+                        makeHighlightLine(
+                            nearest.segment.a.x,
+                            nearest.segment.a.y,
+                            nearest.segment.b.x,
+                            nearest.segment.b.y,
+                            0xffff00,
+                        );
+                        showMeasurementAtClient(
+                            "Length: " + len.toFixed(4),
+                            clientX,
+                            clientY,
+                        );
+                    } else if (kind === "polyline") {
+                        makeHighlightLine(
+                            nearest.segment.a.x,
+                            nearest.segment.a.y,
+                            nearest.segment.b.x,
+                            nearest.segment.b.y,
+                            0xffff00,
+                        );
+                        showMeasurementAtClient(
+                            "Segment: " +
+                                Math.hypot(
+                                    nearest.segment.b.x - nearest.segment.a.x,
+                                    nearest.segment.b.y - nearest.segment.a.y,
+                                ).toFixed(4) +
+                                " • Total: " +
+                                (nearest.totalLength || 0).toFixed(4),
+                            clientX,
+                            clientY,
+                        );
+                    } else if (kind === "circle") {
+                        const r = nearest.meta.radius;
+                        makeHighlightCircle(nearest.meta.center, r, 0xffff00);
+                        showMeasurementAtClient(
+                            "R: " +
+                                r.toFixed(4) +
+                                " • Ø: " +
+                                (2 * r).toFixed(4),
+                            clientX,
+                            clientY,
+                        );
+                    }
+                }
+
+                // pointer/touch behavior: detect small movement vs drag
+                function onPointerDown(e) {
+                    pointerDownInfo = {
+                        id: e.pointerId,
+                        x: e.clientX,
+                        y: e.clientY,
+                        time: Date.now(),
+                    };
+                }
+
+                function onPointerUp(e) {
+                    if (!pointerDownInfo) return;
+                    // ensure same pointer
+                    if (
+                        pointerDownInfo.id != null &&
+                        e.pointerId !== pointerDownInfo.id
+                    ) {
+                        pointerDownInfo = null;
+                        return;
+                    }
+                    const dx = e.clientX - pointerDownInfo.x;
+                    const dy = e.clientY - pointerDownInfo.y;
+                    const movedSq = dx * dx + dy * dy;
+                    pointerDownInfo = null;
+                    // treat as tap/click if movement small
+                    if (movedSq > 8 * 8) {
+                        // was a drag, ignore
+                        return;
+                    }
+
+                    try {
+                        const world = toWorld(e);
+                        // threshold in world units (scale with view)
+                        const h = state.renderer.domElement.height || 1;
+                        const worldPerPixel =
+                            (state.camera.top - state.camera.bottom) / h;
+                        const threshold = Math.max(1e-6, 10 * worldPerPixel); // ~10px
+                        // use existing nearest finder if present; fallback to scanning children
+                        // Local nearest-finder (scans current geometry). Avoids relying on an external function.
+                        function findNearestLocal(worldPt, maxDistance) {
+                            let best = null;
+                            let bestDist = Infinity;
+                            const px = worldPt.x,
+                                py = worldPt.y;
+                            const distPointToSegment = (
+                                px,
+                                py,
+                                ax,
+                                ay,
+                                bx,
+                                by,
+                            ) => {
+                                const vx = bx - ax,
+                                    vy = by - ay;
+                                const wx = px - ax,
+                                    wy = py - ay;
+                                const c1 = vx * wx + vy * wy;
+                                if (c1 <= 0)
+                                    return Math.hypot(px - ax, py - ay);
+                                const c2 = vx * vx + vy * vy;
+                                if (c2 <= c1)
+                                    return Math.hypot(px - bx, py - by);
+                                const t = c1 / c2;
+                                const projx = ax + t * vx,
+                                    projy = ay + t * vy;
+                                return Math.hypot(px - projx, py - projy);
+                            };
+                            for (const child of state.group.children) {
+                                const ud = child.userData || {};
+                                if (!ud.type) continue;
+                                if (ud.type === "line") {
+                                    const d = distPointToSegment(
+                                        px,
+                                        py,
+                                        ud.a.x,
+                                        ud.a.y,
+                                        ud.b.x,
+                                        ud.b.y,
+                                    );
+                                    if (d < bestDist) {
+                                        bestDist = d;
+                                        best = {
+                                            kind: "line",
+                                            obj: child,
+                                            meta: ud,
+                                            segment: { a: ud.a, b: ud.b },
+                                            dist: d,
+                                        };
+                                    }
+                                } else if (ud.type === "polyline") {
+                                    for (
+                                        let i = 0;
+                                        i < (ud.pts || []).length - 1;
+                                        i++
+                                    ) {
+                                        const a = ud.pts[i],
+                                            b = ud.pts[i + 1];
+                                        const d = distPointToSegment(
+                                            px,
+                                            py,
+                                            a.x,
+                                            a.y,
+                                            b.x,
+                                            b.y,
+                                        );
+                                        if (d < bestDist) {
+                                            bestDist = d;
+                                            best = {
+                                                kind: "polyline",
+                                                obj: child,
+                                                meta: ud,
+                                                segment: { a, b },
+                                                dist: d,
+                                                totalLength: ud.length,
+                                            };
+                                        }
+                                    }
+                                } else if (ud.type === "circle") {
+                                    const dcenter = Math.hypot(
+                                        px - ud.center.x,
+                                        py - ud.center.y,
+                                    );
+                                    const dr = Math.abs(dcenter - ud.radius);
+                                    if (dr < bestDist) {
+                                        bestDist = dr;
+                                        best = {
+                                            kind: "circle",
+                                            obj: child,
+                                            meta: ud,
+                                            dist: dr,
+                                        };
+                                    }
+                                }
+                            }
+                            if (bestDist <= maxDistance) return best;
+                            return null;
+                        }
+                        const nearest = findNearestLocal(world, threshold);
+                        handleSelection(nearest, e.clientX, e.clientY);
+                    } catch (err) {
+                        console.error("pointer selection failed", err);
+                    }
+                }
+
+                // Clear on outside click (double tap area) — pointerdown on background handled above
+                state.renderer.domElement.addEventListener(
+                    "pointerdown",
+                    onPointerDown,
+                    { passive: true },
+                );
+                state.renderer.domElement.addEventListener(
+                    "pointerup",
+                    onPointerUp,
+                    { passive: true },
+                );
+
+                // Hide tooltip when user moves pointer significantly
+                state.renderer.domElement.addEventListener(
+                    "pointermove",
+                    (e) => {
+                        // When dragging, hide the measurement tooltip for clarity
+                        if (pointerDownInfo) {
+                            const dx = e.clientX - pointerDownInfo.x;
+                            const dy = e.clientY - pointerDownInfo.y;
+                            if (dx * dx + dy * dy > 8 * 8) {
+                                if (measurementEl)
+                                    measurementEl.style.display = "none";
+                            }
+                        }
+                    },
+                    { passive: true },
+                );
+            })();
+
+            // =============================
+            // MEASURE TOOL
+            // =============================
+            (function initMeasureTool() {
+                const measureBtn = document.getElementById("measureBtn");
+                const measureToolbar =
+                    document.getElementById("measureToolbar");
+                const measureInstructions = document.getElementById(
+                    "measureInstructions",
+                );
+                const measureResult = document.getElementById("measureResult");
+                const cancelMeasure = document.getElementById("cancelMeasure");
+
+                function activateMeasureMode() {
+                    state.measureMode = true;
+                    state.measurePoint1 = null;
+                    if (state.measureLine) {
+                        state.overlayGroup.remove(state.measureLine);
+                        state.measureLine = null;
+                    }
+                    measureBtn.classList.add("active");
+                    measureToolbar.classList.add("active");
+                    measureInstructions.textContent =
+                        "Clique no primeiro ponto";
+                    measureResult.textContent = "";
+                    // Disable orbit controls during measurement
+                    if (state.controls) state.controls.enabled = false;
+                }
+
+                function deactivateMeasureMode() {
+                    state.measureMode = false;
+                    state.measurePoint1 = null;
+                    if (state.measureLine) {
+                        state.overlayGroup.remove(state.measureLine);
+                        state.measureLine = null;
+                    }
+                    measureBtn.classList.remove("active");
+                    measureToolbar.classList.remove("active");
+                    // Re-enable orbit controls
+                    if (state.controls) state.controls.enabled = true;
+                }
+
+                function resetMeasure() {
+                    state.measurePoint1 = null;
+                    if (state.measureLine) {
+                        state.overlayGroup.remove(state.measureLine);
+                        state.measureLine = null;
+                    }
+                    measureInstructions.textContent =
+                        "Clique no primeiro ponto";
+                    measureResult.textContent = "";
+                }
+
+                measureBtn.addEventListener("click", () => {
+                    if (state.measureMode) {
+                        deactivateMeasureMode();
+                    } else {
+                        activateMeasureMode();
+                    }
+                });
+
+                cancelMeasure.addEventListener("click", () => {
+                    resetMeasure();
+                });
+
+                // Handle measure clicks
+                let measurePointerDownInfo = null;
+
+                state.renderer.domElement.addEventListener(
+                    "pointerdown",
+                    (e) => {
+                        if (!state.measureMode) return;
+                        measurePointerDownInfo = {
+                            id: e.pointerId,
+                            x: e.clientX,
+                            y: e.clientY,
+                            time: Date.now(),
+                        };
+                    },
+                    { passive: true },
+                );
+
+                state.renderer.domElement.addEventListener(
+                    "pointerup",
+                    (e) => {
+                        if (!state.measureMode || !measurePointerDownInfo)
+                            return;
+
+                        // Check if same pointer
+                        if (
+                            measurePointerDownInfo.id != null &&
+                            e.pointerId !== measurePointerDownInfo.id
+                        ) {
+                            measurePointerDownInfo = null;
+                            return;
+                        }
+
+                        const dx = e.clientX - measurePointerDownInfo.x;
+                        const dy = e.clientY - measurePointerDownInfo.y;
+                        const movedSq = dx * dx + dy * dy;
+                        measurePointerDownInfo = null;
+
+                        // Treat as tap/click if movement small
+                        if (movedSq > 8 * 8) {
+                            return; // was a drag
+                        }
+
+                        try {
+                            const world = toWorld(e);
+
+                            if (!state.measurePoint1) {
+                                // First point
+                                state.measurePoint1 = {
+                                    x: world.x,
+                                    y: world.y,
+                                };
+                                measureInstructions.textContent =
+                                    "Clique no segundo ponto";
+
+                                // Draw first point marker
+                                const pointGeom = new THREE.BufferGeometry();
+                                const vertices = new Float32Array([
+                                    world.x,
+                                    world.y,
+                                    0,
+                                ]);
+                                pointGeom.setAttribute(
+                                    "position",
+                                    new THREE.BufferAttribute(vertices, 3),
+                                );
+                                const pointMat = new THREE.PointsMaterial({
+                                    color: 0x00ff00,
+                                    size: 8,
+                                    sizeAttenuation: false,
+                                });
+                                const pointMesh = new THREE.Points(
+                                    pointGeom,
+                                    pointMat,
+                                );
+                                state.overlayGroup.add(pointMesh);
+                                state.measureLine = pointMesh; // Will replace with line on second point
+                            } else {
+                                // Second point - calculate distance
+                                const p1 = state.measurePoint1;
+                                const p2 = { x: world.x, y: world.y };
+                                const distance = Math.hypot(
+                                    p2.x - p1.x,
+                                    p2.y - p1.y,
+                                );
+
+                                // Draw line between points
+                                if (state.measureLine) {
+                                    state.overlayGroup.remove(
+                                        state.measureLine,
+                                    );
+                                }
+
+                                const lineGeom = new THREE.BufferGeometry();
+                                const positions = new Float32Array([
+                                    p1.x,
+                                    p1.y,
+                                    0,
+                                    p2.x,
+                                    p2.y,
+                                    0,
+                                ]);
+                                lineGeom.setAttribute(
+                                    "position",
+                                    new THREE.BufferAttribute(positions, 3),
+                                );
+                                const lineMat = new THREE.LineBasicMaterial({
+                                    color: 0x00ff00,
+                                    linewidth: 3,
+                                    depthTest: false,
+                                });
+                                const line = new THREE.Line(lineGeom, lineMat);
+                                state.overlayGroup.add(line);
+
+                                // Draw point markers at both ends
+                                const pointsGeom = new THREE.BufferGeometry();
+                                const pointsVerts = new Float32Array([
+                                    p1.x,
+                                    p1.y,
+                                    0,
+                                    p2.x,
+                                    p2.y,
+                                    0,
+                                ]);
+                                pointsGeom.setAttribute(
+                                    "position",
+                                    new THREE.BufferAttribute(pointsVerts, 3),
+                                );
+                                const pointsMat = new THREE.PointsMaterial({
+                                    color: 0x00ff00,
+                                    size: 8,
+                                    sizeAttenuation: false,
+                                });
+                                const points = new THREE.Points(
+                                    pointsGeom,
+                                    pointsMat,
+                                );
+                                state.overlayGroup.add(points);
+
+                                state.measureLine = new THREE.Group();
+                                state.measureLine.add(line);
+                                state.measureLine.add(points);
+                                state.overlayGroup.add(state.measureLine);
+
+                                // Display result
+                                measureInstructions.textContent =
+                                    "Distância medida:";
+                                measureResult.textContent =
+                                    distance.toFixed(3) + " unidades";
+
+                                // Show detailed info in console
+                                console.log(
+                                    "[MEASURE] P1:",
+                                    p1,
+                                    "P2:",
+                                    p2,
+                                    "Distance:",
+                                    distance,
+                                );
+                            }
+                        } catch (err) {
+                            console.error("Measure click error:", err);
+                        }
+                    },
+                    { passive: true },
+                );
+
+                // Visual feedback: show temporary line while hovering for second point
+                state.renderer.domElement.addEventListener(
+                    "pointermove",
+                    (e) => {
+                        if (!state.measureMode || !state.measurePoint1) return;
+
+                        try {
+                            const world = toWorld(e);
+
+                            // Remove old preview line if exists
+                            const oldPreview = state.overlayGroup.children.find(
+                                (c) => c.userData.isPreview,
+                            );
+                            if (oldPreview)
+                                state.overlayGroup.remove(oldPreview);
+
+                            // Draw preview line
+                            const p1 = state.measurePoint1;
+                            const lineGeom = new THREE.BufferGeometry();
+                            const positions = new Float32Array([
+                                p1.x,
+                                p1.y,
+                                0,
+                                world.x,
+                                world.y,
+                                0,
+                            ]);
+                            lineGeom.setAttribute(
+                                "position",
+                                new THREE.BufferAttribute(positions, 3),
+                            );
+                            const lineMat = new THREE.LineBasicMaterial({
+                                color: 0x00ff00,
+                                opacity: 0.5,
+                                transparent: true,
+                                depthTest: false,
+                            });
+                            const previewLine = new THREE.Line(
+                                lineGeom,
+                                lineMat,
+                            );
+                            previewLine.userData.isPreview = true;
+                            state.overlayGroup.add(previewLine);
+                        } catch (err) {
+                            // Ignore errors during preview
+                        }
+                    },
+                    { passive: true },
+                );
+            })();
 
             // Optional: auto-load a DXF when served via HTTP (uncomment to use)
             // loadUrl(new URL("examples_dxf/bridge.dxf", window.location.href).href).catch(console.warn);
