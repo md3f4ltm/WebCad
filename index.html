@@ -1674,29 +1674,19 @@
                     return bestSnap;
                 }
 
-                // Create beautiful circle marker
-                function createCircleMarker(x, y, color, size = 12) {
-                    const segments = 32;
+                // Create simple small circle marker
+                function createCircleMarker(x, y, color, size = 4) {
+                    // very small simple circle for measurement handles
+                    const segments = 16;
                     const radius = size;
                     const geometry = new THREE.BufferGeometry();
                     const positions = [];
 
-                    // Outer circle
                     for (let i = 0; i <= segments; i++) {
                         const angle = (i / segments) * Math.PI * 2;
                         positions.push(
                             x + Math.cos(angle) * radius,
                             y + Math.sin(angle) * radius,
-                            0,
-                        );
-                    }
-
-                    // Inner circle (smaller)
-                    for (let i = 0; i <= segments; i++) {
-                        const angle = (i / segments) * Math.PI * 2;
-                        positions.push(
-                            x + Math.cos(angle) * (radius * 0.3),
-                            y + Math.sin(angle) * (radius * 0.3),
                             0,
                         );
                     }
@@ -1711,7 +1701,7 @@
 
                     const material = new THREE.LineBasicMaterial({
                         color: color,
-                        linewidth: 2,
+                        linewidth: 1,
                         depthTest: false,
                     });
 
@@ -1771,13 +1761,8 @@
 
                     if (!p1) return;
 
-                    // Draw first point
-                    const circle1 = createCircleMarker(
-                        p1.x,
-                        p1.y,
-                        0x00ff00,
-                        12,
-                    );
+                    // Draw first point (small simple circle)
+                    const circle1 = createCircleMarker(p1.x, p1.y, 0x00ff00);
                     measureState.visualGroup.add(circle1);
 
                     if (p1.snap) {
@@ -1786,12 +1771,11 @@
                     }
 
                     if (p2) {
-                        // Draw second point
+                        // Draw second point (small simple circle)
                         const circle2 = createCircleMarker(
                             p2.x,
                             p2.y,
                             0x00ff00,
-                            12,
                         );
                         measureState.visualGroup.add(circle2);
 
