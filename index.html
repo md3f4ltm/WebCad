@@ -1132,6 +1132,41 @@
             });
             el("fit").addEventListener("click", () => fit2D(0.05));
 
+            // Auto-load via query param: ?file=https://...
+            (function autoLoadFromQuery() {
+                try {
+                    const params = new URLSearchParams(window.location.search);
+                    const url = params.get("file");
+                    if (url) {
+                        console.log(
+                            "[AUTOLOAD] carregando ficheiro via URL:",
+                            url,
+                        );
+                        try {
+                            const abs = new URL(url, window.location.href).href;
+                            loadUrl(abs).catch((e) => {
+                                console.error(
+                                    "[AUTOLOAD] falha ao carregar URL",
+                                    e,
+                                );
+                                showStatus(
+                                    "Erro ao carregar ficheiro a partir do QR",
+                                    4000,
+                                );
+                            });
+                        } catch (err) {
+                            console.error("[AUTOLOAD] URL inválida:", url, err);
+                            showStatus(
+                                "URL inválida no parâmetro 'file'",
+                                4000,
+                            );
+                        }
+                    }
+                } catch (e) {
+                    console.warn("autoLoadFromQuery falhou", e);
+                }
+            })();
+
             // Measurement UI and picking (pointer-based, toggle on repeated clicks, mobile-friendly)
             (function setupPicking() {
                 const measurementEl = document.getElementById("measurement");
