@@ -515,19 +515,33 @@
                 endDeg,
                 color = 0x00ffff,
             ) {
-                // Normalize angles to radians
+                // Normalize input angles to radians
                 const start = toRad(startDeg);
                 const end = toRad(endDeg);
                 let sweep = end - start;
+
+                // Normalize sweep to the shortest equivalent angle in (-PI, PI]
+                const TWO_PI = Math.PI * 2;
+                // Bring into (-2PI, 2PI) first (safe for large inputs)
+                if (sweep > TWO_PI || sweep < -TWO_PI) {
+                    sweep = ((sweep % TWO_PI) + TWO_PI) % TWO_PI;
+                    if (sweep > Math.PI) sweep -= TWO_PI;
+                }
+                // Now ensure within (-PI, PI]
+                while (sweep <= -Math.PI) sweep += TWO_PI;
+                while (sweep > Math.PI) sweep -= TWO_PI;
+
                 // If sweep is effectively zero, keep geometry minimal but still selectable as an arc
                 if (Math.abs(sweep) < 1e-12) {
                     sweep = 0;
                 }
+
                 const absSweep = Math.abs(sweep);
                 const segs = Math.max(
                     32,
-                    Math.ceil((Math.max(radius, 1) * absSweep) / 2),
+                    Math.ceil((Math.max(Math.abs(radius), 1) * absSweep) / 2),
                 );
+
                 // Build geometry for rendering (as line segments), but keep userData as "arc" for picking/measurement
                 const pos = new Float32Array(segs * 6);
                 for (let i = 0; i < segs; i++) {
@@ -548,14 +562,21 @@
                 );
                 const mat = new THREE.LineBasicMaterial({ color });
                 const obj = new THREE.LineSegments(geom, mat);
+
+                // Store normalized metadata: ensure startDeg/endDeg reflect the actual sweep used
+                const startRad = start;
+                const endRad = start + sweep;
+                const startDegNorm = (startRad * 180) / Math.PI;
+                const endDegNorm = (endRad * 180) / Math.PI;
+
                 obj.userData = {
                     type: "arc",
                     center: { x: center.x, y: center.y },
                     radius,
-                    startDeg,
-                    endDeg,
-                    startRad: start,
-                    endRad: end,
+                    startDeg: startDegNorm,
+                    endDeg: endDegNorm,
+                    startRad,
+                    endRad,
                     sweep,
                     color,
                     length: Math.abs(radius * sweep),
